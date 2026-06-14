@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: evalon-winners-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: FINNHUB_KEY
+        sync: false
+      - key: TWELVEDATA_KEY
+        sync: false
+      - key: IMG_BUY
+        value: https://i.imgur.com/8wZkQ2T.png
+      - key: IMG_SELL
+        value: https://i.imgur.com/2yQ9pPV.png

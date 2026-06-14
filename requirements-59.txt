@@ -1,0 +1,10 @@
+python-telegram-bot[job-queue]==21.6
+aiohttp==3.10.10
+numpy==2.1.2
+pandas==2.2.3
+yfinance==0.2.44
+requests==2.32.3
+APScheduler==3.10.4
+python-dotenv==1.0.1
+websockets==13.1
+psycopg[binary]==3.2.3
