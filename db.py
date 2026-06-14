@@ -498,6 +498,12 @@ def pop_join_request(user_id: int):
         return row
 
 
+def has_join_request(user_id: int) -> bool:
+    with db() as c:
+        row = c.execute("SELECT 1 FROM join_requests WHERE user_id=?", (user_id,)).fetchone()
+        return row is not None
+
+
 # ---------------------------------------------------------------------------
 # OTC format state
 # ---------------------------------------------------------------------------
@@ -513,9 +519,15 @@ def get_otc_state():
         return c.execute("SELECT * FROM otc_format WHERE k='current'").fetchone()
 
 
-def set_otc_state(fmt: int, streak_dir: Optional[str], streak_n: int) -> None:
+def set_otc_state(fmt: int, streak_dir: Optional[str], streak_n: int, update_timer: bool = False) -> None:
     with db() as c:
-        c.execute(
-            "UPDATE otc_format SET format=?, streak_dir=?, streak_n=?, changed_at=? WHERE k='current'",
-            (fmt, streak_dir, streak_n, int(time.time())),
-        )
+        if update_timer:
+            c.execute(
+                "UPDATE otc_format SET format=?, streak_dir=?, streak_n=?, changed_at=? WHERE k='current'",
+                (fmt, streak_dir, streak_n, int(time.time())),
+            )
+        else:
+            c.execute(
+                "UPDATE otc_format SET format=?, streak_dir=?, streak_n=? WHERE k='current'",
+                (fmt, streak_dir, streak_n),
+            )
