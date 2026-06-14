@@ -17,17 +17,51 @@ from config import FINNHUB_KEY, TWELVEDATA_KEY
 log = logging.getLogger(__name__)
 # --- pair -> provider symbol maps -----------------------------------------
 YF_MAP = {
+    # Major forex
     "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "JPY=X",
     "USD/CHF": "CHF=X", "USD/CAD": "CAD=X", "AUD/USD": "AUDUSD=X",
+    "NZD/USD": "NZDUSD=X",
+    # EUR crosses
     "EUR/GBP": "EURGBP=X", "EUR/JPY": "EURJPY=X", "EUR/AUD": "EURAUD=X",
-    "EUR/CAD": "EURCAD=X", "EUR/CHF": "EURCHF=X",
+    "EUR/CAD": "EURCAD=X", "EUR/CHF": "EURCHF=X", "EUR/NZD": "EURNZD=X",
+    "EUR/TRY": "EURTRY=X",
+    # GBP crosses
     "GBP/JPY": "GBPJPY=X", "GBP/AUD": "GBPAUD=X", "GBP/CAD": "GBPCAD=X",
-    "GBP/CHF": "GBPCHF=X",
+    "GBP/CHF": "GBPCHF=X", "GBP/NZD": "GBPNZD=X",
+    # AUD crosses
     "AUD/JPY": "AUDJPY=X", "AUD/CAD": "AUDCAD=X", "AUD/CHF": "AUDCHF=X",
+    "AUD/NZD": "AUDNZD=X", "AUD/SGD": "AUDSGD=X",
+    # NZD crosses
+    "NZD/JPY": "NZDJPY=X", "NZD/CAD": "NZDCAD=X", "NZD/CHF": "NZDCHF=X",
+    # Other crosses
     "CHF/JPY": "CHFJPY=X", "CAD/JPY": "CADJPY=X", "CAD/CHF": "CADCHF=X",
-    "XAU/USD": "GC=F", "XAG/USD": "SI=F",
-    "BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD",
-    "US100": "^NDX", "SP500": "^GSPC",
+    "CHF/NOK": "CHFNOK=X",
+    # USD exotic
+    "USD/TRY": "TRY=X", "USD/MXN": "MXN=X", "USD/SGD": "SGD=X",
+    "USD/ZAR": "ZAR=X", "USD/INR": "INR=X", "USD/BRL": "BRL=X",
+    "USD/IDR": "IDR=X", "USD/THB": "THB=X", "USD/MYR": "MYR=X",
+    "USD/PHP": "PHP=X", "USD/NGN": "NGN=X", "USD/PKR": "PKR=X",
+    "USD/VND": "VND=X", "USD/EGP": "EGP=X", "USD/COP": "COP=X",
+    "USD/CLP": "CLP=X", "USD/ARS": "ARS=X", "USD/DZD": "DZD=X",
+    "USD/BDT": "BDT=X",
+    # Commodities
+    "XAU/USD": "GC=F", "XAG/USD": "SI=F", "Brent": "BZ=F", "WTI": "CL=F",
+    # Crypto
+    "BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD", "LTC/USD": "LTC-USD",
+    "BCH/USD": "BCH-USD", "XRP/USD": "XRP-USD", "SOL/USD": "SOL-USD",
+    "DOGE/USD": "DOGE-USD", "ADA/USD": "ADA-USD", "BNB/USD": "BNB-USD",
+    "DOT/USD": "DOT-USD", "AVAX/USD": "AVAX-USD", "MATIC/USD": "MATIC-USD",
+    "LINK/USD": "LINK-USD", "TON/USD": "TON-USD",
+    # Indices
+    "US100": "^NDX", "SP500": "^GSPC", "US30": "^DJI",
+    "DAX": "^GDAXI", "FTSE": "^FTSE", "NIKKEI": "^N225",
+    # Stocks
+    "Apple": "AAPL", "Microsoft": "MSFT", "Tesla": "TSLA",
+    "Amazon": "AMZN", "Google": "GOOGL", "Meta": "META",
+    "Nvidia": "NVDA", "Netflix": "NFLX", "Intel": "INTC",
+    "AMD": "AMD", "Boeing": "BA", "Coca-Cola": "KO",
+    "McDonald's": "MCD", "Pfizer": "PFE", "JPMorgan": "JPM",
+    "Visa": "V", "Mastercard": "MA", "Alibaba": "BABA",
 }
 def _td_symbol(pair: str) -> str:
     return pair.replace(" ", "")
