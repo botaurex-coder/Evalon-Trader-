@@ -210,6 +210,7 @@ async def scan_animation(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str
     return msg.message_id
 async def animate_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, msg_id: int, pair: str, stop: asyncio.Event) -> None:
     i = 0
+    await asyncio.sleep(0.5)
     while not stop.is_set():
         i = (i + 1) % len(SCAN_FRAMES)
         try:
@@ -217,8 +218,10 @@ async def animate_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, msg_id: int
                 chat_id=user_id, message_id=msg_id,
                 text=f"{SCAN_FRAMES[i]} Scanning {pair}...",
             )
-        except Exception:
+        except asyncio.CancelledError:
             return
+        except Exception:
+            pass
         try:
             await asyncio.wait_for(stop.wait(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -254,12 +257,14 @@ async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         sig = await engine.analyze(pair, tf_min=1)
     except Exception as e:
         stop.set(); await anim
-        await cleanup_send(ctx, u.id, text=f"⚠️ Could not analyze {pair}. Try again shortly.\n<code>{e}</code>")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
+        await cleanup_send(ctx, u.id, text=f"⚠️ Could not analyze {pair}. Try again shortly.\n<code>{e}</code>", reply_markup=kb)
         return
     stop.set()
     await anim
     if not sig:
-        await cleanup_send(ctx, u.id, text="🟡 No strong signal right now. Try again in a few seconds.")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
+        await cleanup_send(ctx, u.id, text="🟡 No strong signal right now. Try again in a few seconds.", reply_markup=kb)
         return
     if not db.has_active_licence(u.id):
         db.increment_free(u.id)
