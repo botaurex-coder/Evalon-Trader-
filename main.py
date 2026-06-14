@@ -114,11 +114,13 @@ WELCOME = (
 )
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     u = update.effective_user
+    existing = db.get_user(u.id)
     db.upsert_user(u.id, u.username, u.first_name)
     if db.is_banned(u.id):
         await update.message.reply_text("🚫 You are banned from this bot.")
         return
-    if not is_admin(u.id) and not await is_channel_member(ctx, u.id):
+    # Show channel join prompt only for new users
+    if not existing and not is_admin(u.id) and not await is_channel_member(ctx, u.id):
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
             InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
