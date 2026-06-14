@@ -60,4 +60,9 @@ OTC_PAIRS = [
     "AVAX/USD OTC", "MATIC/USD OTC", "LINK/USD OTC", "TON/USD OTC",
     # Indices OTC
     "US100 OTC", "SP500 OTC", "US30 OTC", "DAX OTC", "FTSE OTC", "NIKKEI OTC",
+    # Stocks OTC
+    "Apple OTC", "Microsoft OTC", "Tesla OTC", "Amazon OTC", "Google OTC",
+    "Meta OTC", "Nvidia OTC", "Netflix OTC", "Intel OTC", "AMD OTC",
+    "Boeing OTC", "Coca-Cola OTC", "McDonald's OTC", "Pfizer OTC",
+    "JPMorgan OTC", "Visa OTC", "Mastercard OTC", "Alibaba OTC",
 ]
