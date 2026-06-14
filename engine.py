@@ -102,14 +102,16 @@ def _otc_transform(raw_dir: str) -> str:
     streak_dir = state["streak_dir"]
     streak_n = state["streak_n"]
     changed_at = state["changed_at"]
-    # Rotate format on a timer (random pick of 1/2/3, weighted)
+    # Rotate format on a timer (random pick of 1/3, weighted)
     if now - changed_at > ROTATE_AFTER_SECONDS:
         fmt = random.choices([1, 3], weights=[5, 3], k=1)[0]
+        db.set_otc_state(fmt, streak_dir, streak_n, update_timer=True)
+    else:
+        db.set_otc_state(fmt, streak_dir, streak_n)
     if fmt == 1:  # reverse
         out = "SELL" if raw_dir == "BUY" else "BUY"
     else:  # normal
         out = raw_dir
-    db.set_otc_state(fmt, streak_dir, streak_n)
     return out
 # --- public API ------------------------------------------------------------
 async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
@@ -120,12 +122,10 @@ async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
         entry = float(df["close"].iloc[-1])
     except Exception:
         if is_otc:
-            # OTC: no real data available, use random fallback
             raw = random.choice(["BUY", "SELL"])
             strength = random.randint(62, 78)
             entry = None
         else:
-            # Non-OTC: refuse to invent data
             return None
     else:
         if is_otc and raw == "NONE":
