@@ -419,16 +419,19 @@ async def cb_otc_scan_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     msg_id = await scan_animation(ctx, u.id, "All OTC Pairs")
     stop = asyncio.Event()
     anim = asyncio.create_task(animate_loop(ctx, u.id, msg_id, "All OTC Pairs", stop))
+    async def _scan(pair):
+        try:
+            return pair, await engine.analyze(pair, tf_min=1)
+        except Exception:
+            return pair, None
+
+    results = await asyncio.gather(*[_scan(p) for p in OTC_PAIRS])
     best_sig = None
     best_pair = None
-    for pair in OTC_PAIRS:
-        try:
-            sig = await engine.analyze(pair, tf_min=1)
-            if sig and (best_sig is None or sig.strength > best_sig.strength):
-                best_sig = sig
-                best_pair = pair
-        except Exception:
-            pass
+    for pair, sig in results:
+        if sig and (best_sig is None or sig.strength > best_sig.strength):
+            best_sig = sig
+            best_pair = pair
     await asyncio.sleep(1)
     stop.set()
     await anim
