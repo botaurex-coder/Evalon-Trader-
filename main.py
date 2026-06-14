@@ -36,6 +36,26 @@ log = logging.getLogger("bot")
 SCAN_FRAMES = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"]
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
+async def is_channel_member(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    try:
+        member = await ctx.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception:
+        return False
+
+async def send_join_prompt(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
+        InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
+    ]])
+    await cleanup_send(
+        ctx, user_id,
+        text="🔒 <b>Join our channel first to use this bot.</b>
+
+After joining, tap <b>I Joined</b>.",
+        reply_markup=kb,
+    )
+
 async def cleanup_send(
     ctx: ContextTypes.DEFAULT_TYPE,
     user_id: int,
@@ -100,21 +120,54 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if db.is_banned(u.id):
         await update.message.reply_text("🚫 You are banned from this bot.")
         return
+    if not is_admin(u.id) and not await is_channel_member(ctx, u.id):
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
+            InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
+        ]])
+        msg = await update.message.reply_text(
+            "🔒 <b>Join our channel first to use this bot.</b>
+
+After joining, tap <b>I Joined</b>.",
+            parse_mode=ParseMode.HTML, reply_markup=kb,
+        )
+        db.push_msg(u.id, msg.message_id)
+        return
     msg = await update.message.reply_text(
         WELCOME, parse_mode=ParseMode.HTML, reply_markup=welcome_markup(),
         disable_web_page_preview=True,
     )
     db.push_msg(u.id, msg.message_id)
+async def cb_check_join(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    u = q.from_user
+    if await is_channel_member(ctx, u.id):
+        await cleanup_send(ctx, u.id, text=WELCOME, reply_markup=welcome_markup())
+    else:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
+            InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
+        ]])
+        await cleanup_send(
+            ctx, u.id,
+            text="❌ You have not joined yet. Please join the channel first.",
+            reply_markup=kb,
+        )
+
 async def cb_show_pairs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
     u = q.from_user
     if db.is_banned(u.id):
         return
+    if not is_admin(u.id) and not await is_channel_member(ctx, u.id):
+        await send_join_prompt(ctx, u.id)
+        return
     ok, why = db.can_request_signal(u.id)
-    header = "📊 <b>Select a pair:</b>" if ok else why
     if not ok:
-        await cleanup_send(ctx, u.id, text=header)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Get Licence", url=f"https://t.me/{SUPPORT_BOT}")]])
+        await cleanup_send(ctx, u.id, text=why, reply_markup=kb)
         return
     mode = "OTC" if not market_is_open() else "Live"
     await cleanup_send(
@@ -155,7 +208,8 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     ok, why = db.can_request_signal(u.id)
     if not ok:
-        await cleanup_send(ctx, u.id, text=why)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Get Licence", url=f"https://t.me/{SUPPORT_BOT}")]])
+        await cleanup_send(ctx, u.id, text=why, reply_markup=kb)
         return
     open_now = market_is_open()
     is_otc = pair.endswith(" OTC")
@@ -666,6 +720,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("listbrokers", cmd_listbrokers))
     app.add_handler(CommandHandler("dbcheck", cmd_dbcheck))
     app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CallbackQueryHandler(cb_check_join, pattern=r"^check_join$"))
     app.add_handler(CallbackQueryHandler(cb_show_pairs, pattern=r"^show_pairs$"))
     app.add_handler(CallbackQueryHandler(cb_back_home, pattern=r"^back_home$"))
     app.add_handler(CallbackQueryHandler(cb_broker_menu, pattern=r"^broker_menu$"))
