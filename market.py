@@ -1,3 +1,4 @@
+import time
 """Market data fetching with multiple-source fallback.
 Strategy:
   1. Try Twelve Data (best free coverage for forex/crypto/indices) if key set.
@@ -15,6 +16,7 @@ import requests
 import yfinance as yf
 from config import FINNHUB_KEY, TWELVEDATA_KEY
 log = logging.getLogger(__name__)
+
 # --- pair -> provider symbol maps -----------------------------------------
 YF_MAP = {
     # Major forex
