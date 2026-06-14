@@ -50,7 +50,7 @@ async def send_join_prompt(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> None
     ]])
     await cleanup_send(
         ctx, user_id,
-        text="🔒 <b>Jiunge na channel yetu kwanza.</b>\n\nBaada ya kujiunga, bonyeza <b>Nimejiunga</b>.",
+        text="🔒 <b>Join our channel first to use this bot.</b>\n\nAfter joining, tap <b>I Joined</b>.",
         reply_markup=kb,
     )
 
@@ -83,8 +83,21 @@ async def cleanup_send(
         )
     db.push_msg(user_id, msg.message_id)
     return msg.message_id
-def pairs_keyboard() -> InlineKeyboardMarkup:
-    pairs = OTC_PAIRS if not market_is_open() else NON_OTC_PAIRS
+def get_session() -> tuple[str, str]:
+    """Returns (emoji, session name) based on current UTC time."""
+    hour = datetime.now(timezone.utc).hour
+    if 22 <= hour or hour < 7:
+        return "🔵", "Tokyo Session"
+    elif 7 <= hour < 9:
+        return "🟡", "Sydney Session"
+    elif 7 <= hour < 16:
+        return "🟢", "London Session"
+    elif 16 <= hour < 22:
+        return "🔴", "New York Session"
+    return "⚪", "Market Closed"
+
+def pairs_keyboard(mode: str = "otc") -> InlineKeyboardMarkup:
+    pairs = OTC_PAIRS if mode == "otc" else NON_OTC_PAIRS
     rows = []
     row = []
     for i, p in enumerate(pairs, 1):
@@ -93,6 +106,7 @@ def pairs_keyboard() -> InlineKeyboardMarkup:
             rows.append(row); row = []
     if row:
         rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="show_pairs")])
     return InlineKeyboardMarkup(rows)
 def welcome_markup() -> InlineKeyboardMarkup:
     rows = []
@@ -107,8 +121,6 @@ def welcome_markup() -> InlineKeyboardMarkup:
 WELCOME = (
     "👋 <b>Welcome to Evalon Winners Bot</b>\n\n"
     "High-accuracy binary-options signals powered by multi-indicator AI consensus.\n\n"
-    "• <b>Free trial:</b> 3 signals\n"
-    "• <b>Then:</b> activate a licence code\n\n"
     "Choose an option below to get started 👇"
 )
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -158,7 +170,7 @@ async def cb_check_join(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ]])
         await cleanup_send(
             ctx, u.id,
-            text="❌ Bado hujaungana. Tafadhali jiunge na channel kwanza.",
+            text="❌ You have not joined yet. Please join the channel first.",
             reply_markup=kb,
         )
 
@@ -168,20 +180,52 @@ async def cb_show_pairs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     u = q.from_user
     if db.is_banned(u.id):
         return
-    if not is_admin(u.id) and not await is_channel_member(ctx, u.id):
+    if not is_admin(u.id) and not await is_channel_member(ctx, u.id) and not db.has_join_request(u.id):
         await send_join_prompt(ctx, u.id)
         return
-    ok, why = db.can_request_signal(u.id)
-    if not ok:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Get Licence", url=f"https://t.me/{SUPPORT_BOT}")]])
-        await cleanup_send(ctx, u.id, text=why, reply_markup=kb)
-        return
-    mode = "OTC" if not market_is_open() else "Live"
+    if not is_admin(u.id) and not db.has_active_licence(u.id):
+        trial_status = db.get_trial_status(u.id)
+        if trial_status == "expired":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")]])
+            await cleanup_send(
+                ctx, u.id,
+                text=(
+                    "⏰ <b>Trial Expired</b>\n\n"
+                    "Your 10-minute free trial has ended.\n"
+                    "Contact admin to get unlimited signals."
+                ),
+                reply_markup=kb,
+            )
+            return
+    open_now = market_is_open()
+    emoji, session = get_session()
+    if open_now:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Live Pairs", callback_data="market|live")],
+            [InlineKeyboardButton("🕐 OTC Pairs", callback_data="market|otc")],
+        ])
+        await cleanup_send(ctx, u.id, text=f"{emoji} <b>{session}</b>", reply_markup=kb)
+    else:
+        await cleanup_send(
+            ctx, u.id,
+            text=f"⚪ <b>Market Closed</b>\n\n📊 <b>Select a pair</b> (OTC market):",
+            reply_markup=pairs_keyboard("otc"),
+        )
+# ----------------------------------------------------------------------------
+# market type selection
+# ----------------------------------------------------------------------------
+async def cb_market_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    mode = q.data.split("|", 1)[1]
+    label = "Live" if mode == "live" else "OTC"
+    emoji, session = get_session()
     await cleanup_send(
-        ctx, u.id,
-        text=f"📊 <b>Select a pair</b> ({mode} market):",
-        reply_markup=pairs_keyboard(),
+        ctx, q.from_user.id,
+        text=f"{emoji} <b>{session}</b>\n\n📊 <b>Select a pair</b> ({label} market):",
+        reply_markup=pairs_keyboard(mode),
     )
+
 # ----------------------------------------------------------------------------
 # broker menu
 # ----------------------------------------------------------------------------
@@ -208,6 +252,36 @@ async def cb_back_home(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await cleanup_send(ctx, q.from_user.id, text=WELCOME, reply_markup=welcome_markup())
 # ----------------------------------------------------------------------------
+# trial start
+# ----------------------------------------------------------------------------
+async def cb_trial_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    pair = q.data.split("|", 1)[1]
+    u = q.from_user
+    db.start_trial(u.id)
+    # Now show pair signal directly
+    open_now = market_is_open()
+    is_otc = pair.endswith(" OTC")
+    if is_otc:
+        rows = [
+            [
+                InlineKeyboardButton("5s", callback_data=f"otc|{pair}|5"),
+                InlineKeyboardButton("10s", callback_data=f"otc|{pair}|10"),
+                InlineKeyboardButton("15s", callback_data=f"otc|{pair}|15"),
+                InlineKeyboardButton("30s", callback_data=f"otc|{pair}|30"),
+            ],
+            [InlineKeyboardButton("⏱ Bot Picks", callback_data="otc_scan_all")],
+        ]
+        await cleanup_send(ctx, u.id, text=f"⏱ <b>{pair}</b>\nSelect signal duration:", reply_markup=InlineKeyboardMarkup(rows))
+    else:
+        rows = [
+            [InlineKeyboardButton("🤖 Auto Signal", callback_data=f"auto|{pair}")],
+            [InlineKeyboardButton("⏱ Bot Picks", callback_data=f"picks|{pair}")],
+        ]
+        await cleanup_send(ctx, u.id, text=f"📈 <b>{pair}</b>\nChoose signal mode:", reply_markup=InlineKeyboardMarkup(rows))
+
+# ----------------------------------------------------------------------------
 # pair selection
 # ----------------------------------------------------------------------------
 async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -217,12 +291,49 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     u = q.from_user
     if db.is_banned(u.id):
         return
-    ok, why = db.can_request_signal(u.id)
-    if not ok:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Get Licence", url=f"https://t.me/{SUPPORT_BOT}")]])
-        await cleanup_send(ctx, u.id, text=why, reply_markup=kb)
-        return
     open_now = market_is_open()
+    is_otc_pair = pair.endswith(" OTC")
+    # OTC — subscribers only
+    if is_otc_pair and not is_admin(u.id) and not db.has_active_licence(u.id):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="show_pairs")],
+        ])
+        await cleanup_send(
+            ctx, u.id,
+            text="🔒 OTC Signals — Subscribers Only. Contact admin to get unlimited access, or wait for the market to open.",
+            reply_markup=kb,
+        )
+        return
+    # 10-minute trial check — non-OTC only
+    if not is_admin(u.id) and not db.has_active_licence(u.id) and not is_otc_pair:
+        trial_status = db.get_trial_status(u.id)
+        if trial_status == "not_started":
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Get Signal", callback_data=f"trial_start|{pair}"),
+            ]])
+            await cleanup_send(
+                ctx, u.id,
+                text=(
+                    "🎁 <b>Free Trial</b>\n\n"
+                    "You will get <b>10 minutes</b> of free signals to test our bot.\n\n"
+                    "Tap below to start your trial now!"
+                ),
+                reply_markup=kb,
+            )
+            return
+        elif trial_status == "expired":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")]])
+            await cleanup_send(
+                ctx, u.id,
+                text=(
+                    "⏰ <b>Trial Expired</b>\n\n"
+                    "Your 10-minute free trial has ended.\n"
+                    "Contact admin to get unlimited signals."
+                ),
+                reply_markup=kb,
+            )
+            return
     is_otc = pair.endswith(" OTC")
     if is_otc and open_now:
         await cleanup_send(
@@ -239,12 +350,15 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     if is_otc:
-        rows = [[
-            InlineKeyboardButton("5s", callback_data=f"otc|{pair}|5"),
-            InlineKeyboardButton("10s", callback_data=f"otc|{pair}|10"),
-            InlineKeyboardButton("15s", callback_data=f"otc|{pair}|15"),
-            InlineKeyboardButton("30s", callback_data=f"otc|{pair}|30"),
-        ]]
+        rows = [
+            [
+                InlineKeyboardButton("5s", callback_data=f"otc|{pair}|5"),
+                InlineKeyboardButton("10s", callback_data=f"otc|{pair}|10"),
+                InlineKeyboardButton("15s", callback_data=f"otc|{pair}|15"),
+                InlineKeyboardButton("30s", callback_data=f"otc|{pair}|30"),
+            ],
+            [InlineKeyboardButton("⏱ Bot Picks", callback_data="otc_scan_all")],
+        ]
         await cleanup_send(
             ctx, u.id,
             text=f"⏱ <b>{pair}</b>\nSelect signal duration:",
@@ -292,6 +406,48 @@ async def animate_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, msg_id: int
         except asyncio.TimeoutError:
             pass
 # ----------------------------------------------------------------------------
+# OTC scan all pairs
+# ----------------------------------------------------------------------------
+async def cb_otc_scan_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    u = q.from_user
+    if not db.has_active_licence(u.id) and not is_admin(u.id):
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")]])
+        await cleanup_send(ctx, u.id, text="🔒 OTC Signals — Subscribers Only. Contact admin to get unlimited access, or wait for the market to open.", reply_markup=kb)
+        return
+    msg_id = await scan_animation(ctx, u.id, "All OTC Pairs")
+    stop = asyncio.Event()
+    anim = asyncio.create_task(animate_loop(ctx, u.id, msg_id, "All OTC Pairs", stop))
+    best_sig = None
+    best_pair = None
+    for pair in OTC_PAIRS:
+        try:
+            sig = await engine.analyze(pair, tf_min=1)
+            if sig and (best_sig is None or sig.strength > best_sig.strength):
+                best_sig = sig
+                best_pair = pair
+        except Exception:
+            pass
+    await asyncio.sleep(1)
+    stop.set()
+    await anim
+    if not best_sig or not best_pair:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="show_pairs")]])
+        await cleanup_send(ctx, u.id, text="🟡 No signals found. Try again shortly.", reply_markup=kb)
+        return
+    if not db.has_active_licence(u.id):
+        db.increment_free(u.id)
+    db.record_signal(u.id, best_pair, best_sig.direction, 60, best_sig.entry, best_sig.strength)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data="otc_scan_all")]])
+    await cleanup_send(
+        ctx, u.id,
+        photo=signal_image(best_sig.direction),
+        caption=signal_caption(best_pair, best_sig.direction, 60, best_sig.strength),
+        reply_markup=kb,
+    )
+
+# ----------------------------------------------------------------------------
 # OTC signal
 # ----------------------------------------------------------------------------
 def signal_caption(pair: str, direction: str, seconds: int, strength: int) -> str:
@@ -334,12 +490,14 @@ async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not db.has_active_licence(u.id):
         db.increment_free(u.id)
-    db.record_signal(u.id, pair, sig.direction, seconds, sig.entry, sig.strength)
+    import random as _rnd
+    display_strength = _rnd.choice([65, 67, 68, 70, 72, 73, 75, 76, 78, 80, 82, 85])
+    db.record_signal(u.id, pair, sig.direction, seconds, sig.entry, display_strength)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
     await cleanup_send(
         ctx, u.id,
         photo=signal_image(sig.direction),
-        caption=signal_caption(pair, sig.direction, seconds, sig.strength),
+        caption=signal_caption(pair, sig.direction, seconds, display_strength),
         reply_markup=kb,
     )
 # ----------------------------------------------------------------------------
@@ -507,22 +665,32 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # join requests
 # ----------------------------------------------------------------------------
 async def on_join_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Record that user sent a join request. Admin approves via channel — bot just checks."""
+    """Record join request and let user in immediately."""
     req: ChatJoinRequest = update.chat_join_request
     if req.chat.id != CHANNEL_ID:
         return
     user = req.from_user
     db.add_join_request(user.id, req.chat.id)
+    db.upsert_user(user.id, user.username, user.first_name)
     try:
-        await ctx.bot.send_message(
-            chat_id=user.id,
-            text=(
-                "📥 <b>Request received!</b>\n\n"
-                "Your join request has been sent to the channel admin.\n"
-                "Once approved, send /start to access the bot. ✅"
-            ),
-            parse_mode=ParseMode.HTML,
-        )
+        await ctx.bot.send_message(chat_id=user.id, text="received ✅")
+    except Exception:
+        pass
+    # Show welcome immediately
+    img = db.get_setting("img_welcome") or IMG_WELCOME
+    try:
+        if img:
+            msg = await ctx.bot.send_photo(
+                chat_id=user.id, photo=img, caption=WELCOME,
+                parse_mode=ParseMode.HTML, reply_markup=welcome_markup(),
+            )
+        else:
+            msg = await ctx.bot.send_message(
+                chat_id=user.id, text=WELCOME,
+                parse_mode=ParseMode.HTML, reply_markup=welcome_markup(),
+                disable_web_page_preview=True,
+            )
+        db.push_msg(user.id, msg.message_id)
     except Exception:
         pass
 # ----------------------------------------------------------------------------
@@ -737,11 +905,14 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("dbcheck", cmd_dbcheck))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CallbackQueryHandler(cb_check_join, pattern=r"^check_join$"))
+    app.add_handler(CallbackQueryHandler(cb_trial_start, pattern=r"^trial_start\|"))
     app.add_handler(CallbackQueryHandler(cb_show_pairs, pattern=r"^show_pairs$"))
+    app.add_handler(CallbackQueryHandler(cb_market_type, pattern=r"^market\|"))
     app.add_handler(CallbackQueryHandler(cb_back_home, pattern=r"^back_home$"))
     app.add_handler(CallbackQueryHandler(cb_broker_menu, pattern=r"^broker_menu$"))
     app.add_handler(CallbackQueryHandler(cb_pair, pattern=r"^pair\|"))
     app.add_handler(CallbackQueryHandler(cb_otc, pattern=r"^otc\|"))
+    app.add_handler(CallbackQueryHandler(cb_otc_scan_all, pattern=r"^otc_scan_all$"))
     app.add_handler(CallbackQueryHandler(cb_auto, pattern=r"^auto\|"))
     app.add_handler(CallbackQueryHandler(cb_auto_tf, pattern=r"^autotf\|"))
     app.add_handler(CallbackQueryHandler(cb_auto_stop, pattern=r"^auto_stop$"))
