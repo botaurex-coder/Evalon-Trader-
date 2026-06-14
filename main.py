@@ -71,7 +71,7 @@ def pairs_keyboard() -> InlineKeyboardMarkup:
     row = []
     for i, p in enumerate(pairs, 1):
         row.append(InlineKeyboardButton(p, callback_data=f"pair|{p}"))
-        if i % 2 == 0:
+        if i % 3 == 0:
             rows.append(row); row = []
     if row:
         rows.append(row)
@@ -264,7 +264,7 @@ async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not db.has_active_licence(u.id):
         db.increment_free(u.id)
     db.record_signal(u.id, pair, sig.direction, seconds, sig.entry, sig.strength)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"pair|{pair}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
     await cleanup_send(
         ctx, u.id,
         photo=signal_image(sig.direction),
