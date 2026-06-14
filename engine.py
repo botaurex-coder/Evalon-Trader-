@@ -93,7 +93,7 @@ def _consensus(df: pd.DataFrame) -> tuple[str, int]:
         return "SELL", int(round((1 - pct_up) * 100))
     return "NONE", int(round(max(pct_up, 1 - pct_up) * 100))
 # --- OTC format rotation ---------------------------------------------------
-ROTATE_AFTER_SECONDS = 30 * 60   # change format roughly every 30 min
+ROTATE_AFTER_SECONDS = 5 * 60    # change format roughly every 5 min
 ROTATE_AFTER_STREAK = 5          # max same-direction streak in format 2
 def _otc_transform(raw_dir: str) -> str:
     state = db.get_otc_state()
