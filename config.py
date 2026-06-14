@@ -20,6 +20,7 @@ TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY", "").strip()
 # --- Defaults --------------------------------------------------------------
 IMG_BUY = os.getenv("IMG_BUY", "https://i.imgur.com/8wZkQ2T.png")
 IMG_SELL = os.getenv("IMG_SELL", "https://i.imgur.com/2yQ9pPV.png")
+IMG_WELCOME = os.getenv("IMG_WELCOME", "")
 
 FREE_SIGNAL_LIMIT = 3
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
