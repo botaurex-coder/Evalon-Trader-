@@ -320,6 +320,7 @@ async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     anim = asyncio.create_task(animate_loop(ctx, u.id, msg_id, pair, stop))
     try:
         sig = await engine.analyze(pair, tf_min=1)
+        await asyncio.sleep(2)
     except Exception as e:
         stop.set(); await anim
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
