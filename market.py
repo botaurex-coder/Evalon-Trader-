@@ -1,4 +1,4 @@
-import time
+from __future__ import annotations
 """Market data fetching with multiple-source fallback.
 Strategy:
   1. Try Twelve Data (best free coverage for forex/crypto/indices) if key set.
@@ -6,7 +6,6 @@ Strategy:
   3. Fall back to yfinance (no key, always available) for everything mappable.
   4. As a last resort, raise — bot refuses to invent data.
 """
-from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
