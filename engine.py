@@ -104,16 +104,9 @@ def _otc_transform(raw_dir: str) -> str:
     changed_at = state["changed_at"]
     # Rotate format on a timer (random pick of 1/2/3, weighted)
     if now - changed_at > ROTATE_AFTER_SECONDS:
-        fmt = random.choices([1, 2, 3], weights=[5, 2, 3], k=1)[0]
-        streak_dir, streak_n = None, 0
+        fmt = random.choices([1, 3], weights=[5, 3], k=1)[0]
     if fmt == 1:  # reverse
         out = "SELL" if raw_dir == "BUY" else "BUY"
-    elif fmt == 2:  # streak
-        if streak_dir is None or streak_n >= random.randint(2, 4):
-            streak_dir = random.choice(["BUY", "SELL"])
-            streak_n = 0
-        out = streak_dir
-        streak_n += 1
     else:  # normal
         out = raw_dir
     db.set_otc_state(fmt, streak_dir, streak_n)
