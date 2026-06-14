@@ -50,9 +50,7 @@ async def send_join_prompt(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> None
     ]])
     await cleanup_send(
         ctx, user_id,
-        text="🔒 <b>Join our channel first to use this bot.</b>
-
-After joining, tap <b>I Joined</b>.",
+        text="🔒 <b>Join our channel first to use this bot.</b>\n\nAfter joining, tap <b>I Joined</b>.",
         reply_markup=kb,
     )
 
@@ -126,9 +124,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
         ]])
         msg = await update.message.reply_text(
-            "🔒 <b>Join our channel first to use this bot.</b>
-
-After joining, tap <b>I Joined</b>.",
+            "🔒 <b>Join our channel first to use this bot.</b>\n\nAfter joining, tap <b>I Joined</b>.",
             parse_mode=ParseMode.HTML, reply_markup=kb,
         )
         db.push_msg(u.id, msg.message_id)
