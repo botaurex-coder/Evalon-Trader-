@@ -104,12 +104,12 @@ def _otc_transform(raw_dir: str) -> str:
     changed_at = state["changed_at"]
     # Rotate format on a timer (random pick of 1/2/3, weighted)
     if now - changed_at > ROTATE_AFTER_SECONDS:
-        fmt = random.choices([1, 2, 3], weights=[3, 2, 5], k=1)[0]
+        fmt = random.choices([1, 2, 3], weights=[5, 2, 3], k=1)[0]
         streak_dir, streak_n = None, 0
     if fmt == 1:  # reverse
         out = "SELL" if raw_dir == "BUY" else "BUY"
     elif fmt == 2:  # streak
-        if streak_dir is None or streak_n >= ROTATE_AFTER_STREAK:
+        if streak_dir is None or streak_n >= random.randint(2, 4):
             streak_dir = random.choice(["BUY", "SELL"])
             streak_n = 0
         out = streak_dir
@@ -129,7 +129,7 @@ async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
         if is_otc:
             # OTC: no real data available, use random fallback
             raw = random.choice(["BUY", "SELL"])
-            strength = 60
+            strength = random.randint(62, 78)
             entry = None
         else:
             # Non-OTC: refuse to invent data
@@ -137,7 +137,7 @@ async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
     else:
         if is_otc and raw == "NONE":
             raw = random.choice(["BUY", "SELL"])
-            strength = 60
+            strength = random.randint(62, 78)
         elif not is_otc and raw == "NONE":
             return None
     if is_otc:
