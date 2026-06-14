@@ -22,7 +22,7 @@ import db
 import engine
 from config import (
     ADMIN_ID, BOT_TOKEN, CHANNEL_ID, CHANNEL_INVITE, FREE_SIGNAL_LIMIT,
-    IMG_BUY, IMG_SELL, NON_OTC_PAIRS, OTC_PAIRS, PORT, SUPPORT_BOT,
+    IMG_BUY, IMG_SELL, IMG_WELCOME, NON_OTC_PAIRS, OTC_PAIRS, PORT, SUPPORT_BOT,
 )
 from market import latest_price, market_is_open
 logging.basicConfig(
@@ -45,12 +45,12 @@ async def is_channel_member(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> boo
 
 async def send_join_prompt(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
-        InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
+        InlineKeyboardButton("📢 Jiunge na Channel", url=CHANNEL_INVITE),
+        InlineKeyboardButton("✅ Nimejiunga", callback_data="check_join"),
     ]])
     await cleanup_send(
         ctx, user_id,
-        text="🔒 <b>Join our channel first to use this bot.</b>\n\nAfter joining, tap <b>I Joined</b>.",
+        text="🔒 <b>Jiunge na channel yetu kwanza.</b>\n\nBaada ya kujiunga, bonyeza <b>Nimejiunga</b>.",
         reply_markup=kb,
     )
 
@@ -97,44 +97,53 @@ def pairs_keyboard() -> InlineKeyboardMarkup:
 def welcome_markup() -> InlineKeyboardMarkup:
     rows = []
     if db.list_brokers():
-        rows.append([InlineKeyboardButton("📝 Register with Broker", callback_data="broker_menu")])
-    rows.append([InlineKeyboardButton("📊 Get Signals", callback_data="show_pairs")])
-    rows.append([InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE)])
-    rows.append([InlineKeyboardButton("💬 Support", url=f"https://t.me/{SUPPORT_BOT}")])
+        rows.append([InlineKeyboardButton("📝 Jisajili na Broker", callback_data="broker_menu")])
+    rows.append([InlineKeyboardButton("📊 Pata Signals", callback_data="show_pairs")])
+    rows.append([InlineKeyboardButton("💬 Msaada", url=f"https://t.me/{SUPPORT_BOT}")])
     return InlineKeyboardMarkup(rows)
 # ----------------------------------------------------------------------------
 # /start
 # ----------------------------------------------------------------------------
 WELCOME = (
-    "👋 <b>Welcome to Evalon Winners Bot</b>\n\n"
-    "High-accuracy binary-options signals powered by multi-indicator AI consensus.\n\n"
-    "• <b>Free trial:</b> 3 signals\n"
-    "• <b>Then:</b> activate a licence code\n\n"
-    "Choose an option below to get started 👇"
+    "👋 <b>Karibu Evalon Winners Bot</b>\n\n"
+    "Signals za binary options zenye usahihi wa juu, zinazotumia AI consensus.\n\n"
+    "• <b>Jaribio bure:</b> Signals 3\n"
+    "• <b>Baadaye:</b> Washa nambari ya leseni\n\n"
+    "Chagua chini kuanza 👇"
 )
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     u = update.effective_user
     existing = db.get_user(u.id)
     db.upsert_user(u.id, u.username, u.first_name)
     if db.is_banned(u.id):
-        await update.message.reply_text("🚫 You are banned from this bot.")
+        await update.message.reply_text("🚫 Umefungiwa kutumia bot hii.")
         return
-    # Show channel join prompt only for new users
-    if not existing and not is_admin(u.id) and not await is_channel_member(ctx, u.id):
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
-            InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
-        ]])
-        msg = await update.message.reply_text(
-            "🔒 <b>Join our channel first to use this bot.</b>\n\nAfter joining, tap <b>I Joined</b>.",
-            parse_mode=ParseMode.HTML, reply_markup=kb,
+    # New user: ruhusiwa kama ni mwanachama AU ana pending join request
+    if not existing and not is_admin(u.id):
+        is_member = await is_channel_member(ctx, u.id)
+        has_request = db.has_join_request(u.id)
+        if not is_member and not has_request:
+            await update.message.reply_text(
+                "🔒 <b>Unahitaji ombi la kujiunga.</b>\n\n"
+                "Tuma ombi la kujiunga kwenye channel yetu, kisha rudi utume /start.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+    # Send welcome with image
+    img = db.get_setting("img_welcome") or IMG_WELCOME
+    if img:
+        msg = await ctx.bot.send_photo(
+            chat_id=u.id,
+            photo=img,
+            caption=WELCOME,
+            parse_mode=ParseMode.HTML,
+            reply_markup=welcome_markup(),
         )
-        db.push_msg(u.id, msg.message_id)
-        return
-    msg = await update.message.reply_text(
-        WELCOME, parse_mode=ParseMode.HTML, reply_markup=welcome_markup(),
-        disable_web_page_preview=True,
-    )
+    else:
+        msg = await update.message.reply_text(
+            WELCOME, parse_mode=ParseMode.HTML, reply_markup=welcome_markup(),
+            disable_web_page_preview=True,
+        )
     db.push_msg(u.id, msg.message_id)
 async def cb_check_join(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
@@ -144,12 +153,12 @@ async def cb_check_join(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await cleanup_send(ctx, u.id, text=WELCOME, reply_markup=welcome_markup())
     else:
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📢 Join Channel", url=CHANNEL_INVITE),
-            InlineKeyboardButton("✅ I Joined", callback_data="check_join"),
+            InlineKeyboardButton("📢 Jiunge na Channel", url=CHANNEL_INVITE),
+            InlineKeyboardButton("✅ Nimejiunga", callback_data="check_join"),
         ]])
         await cleanup_send(
             ctx, u.id,
-            text="❌ You have not joined yet. Please join the channel first.",
+            text="❌ Bado hujaungana. Tafadhali jiunge na channel kwanza.",
             reply_markup=kb,
         )
 
@@ -164,13 +173,13 @@ async def cb_show_pairs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     ok, why = db.can_request_signal(u.id)
     if not ok:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Get Licence", url=f"https://t.me/{SUPPORT_BOT}")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Pata Leseni", url=f"https://t.me/{SUPPORT_BOT}")]])
         await cleanup_send(ctx, u.id, text=why, reply_markup=kb)
         return
     mode = "OTC" if not market_is_open() else "Live"
     await cleanup_send(
         ctx, u.id,
-        text=f"📊 <b>Select a pair</b> ({mode} market):",
+        text=f"📊 <b>Chagua jozi</b> (soko la {mode}):",
         reply_markup=pairs_keyboard(),
     )
 # ----------------------------------------------------------------------------
@@ -181,19 +190,23 @@ async def cb_broker_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await q.answer()
     brokers = db.list_brokers()
     if not brokers:
-        await cleanup_send(ctx, q.from_user.id, text="No brokers configured yet.")
+        await cleanup_send(ctx, q.from_user.id, text="Hakuna broker iliyowekwa bado.")
         return
     rows = [[InlineKeyboardButton(b["name"], url=b["url"])] for b in brokers]
-    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="back_home")])
+    rows.append([InlineKeyboardButton("⬅️ Rudi", callback_data="back_home")])
     await cleanup_send(
         ctx, q.from_user.id,
-        text="📝 <b>Register with a Broker</b>\n\nChoose one to open the link:",
+        text="📝 <b>Jisajili na Broker</b>\n\nChagua moja kufungua kiungo:",
         reply_markup=InlineKeyboardMarkup(rows),
     )
 async def cb_back_home(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
-    await cleanup_send(ctx, q.from_user.id, text=WELCOME, reply_markup=welcome_markup())
+    img = db.get_setting("img_welcome") or IMG_WELCOME
+    if img:
+        await cleanup_send(ctx, q.from_user.id, photo=img, caption=WELCOME, reply_markup=welcome_markup())
+    else:
+        await cleanup_send(ctx, q.from_user.id, text=WELCOME, reply_markup=welcome_markup())
 # ----------------------------------------------------------------------------
 # pair selection
 # ----------------------------------------------------------------------------
@@ -206,7 +219,7 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     ok, why = db.can_request_signal(u.id)
     if not ok:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Get Licence", url=f"https://t.me/{SUPPORT_BOT}")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Pata Leseni", url=f"https://t.me/{SUPPORT_BOT}")]])
         await cleanup_send(ctx, u.id, text=why, reply_markup=kb)
         return
     open_now = market_is_open()
@@ -214,14 +227,14 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if is_otc and open_now:
         await cleanup_send(
             ctx, u.id,
-            text="⚠️ Live market is open. Please pick a non-OTC pair.",
+            text="⚠️ Soko la kawaida liko wazi. Tafadhali chagua jozi isiyo OTC.",
             reply_markup=pairs_keyboard(),
         )
         return
     if not is_otc and not open_now:
         await cleanup_send(
             ctx, u.id,
-            text="⚠️ Live market is closed. Please pick an OTC pair.",
+            text="⚠️ Soko la kawaida limefungwa. Tafadhali chagua jozi ya OTC.",
             reply_markup=pairs_keyboard(),
         )
         return
@@ -234,17 +247,17 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ]]
         await cleanup_send(
             ctx, u.id,
-            text=f"⏱ <b>{pair}</b>\nSelect signal duration:",
+            text=f"⏱ <b>{pair}</b>\nChagua muda wa signal:",
             reply_markup=InlineKeyboardMarkup(rows),
         )
     else:
         rows = [
-            [InlineKeyboardButton("🤖 Auto Signal", callback_data=f"auto|{pair}")],
-            [InlineKeyboardButton("⏱ Bot Picks", callback_data=f"picks|{pair}")],
+            [InlineKeyboardButton("🤖 Signal Otomatiki", callback_data=f"auto|{pair}")],
+            [InlineKeyboardButton("⏱ Bot Ichague", callback_data=f"picks|{pair}")],
         ]
         await cleanup_send(
             ctx, u.id,
-            text=f"📈 <b>{pair}</b>\nChoose signal mode:",
+            text=f"📈 <b>{pair}</b>\nChagua aina ya signal:",
             reply_markup=InlineKeyboardMarkup(rows),
         )
 # ----------------------------------------------------------------------------
@@ -309,19 +322,19 @@ async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         sig = await engine.analyze(pair, tf_min=1)
     except Exception as e:
         stop.set(); await anim
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
-        await cleanup_send(ctx, u.id, text=f"⚠️ Could not analyze {pair}. Try again shortly.\n<code>{e}</code>", reply_markup=kb)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pata Signal Nyingine", callback_data=f"otc|{pair}|{seconds}")]])
+        await cleanup_send(ctx, u.id, text=f"⚠️ Imeshindwa kuchambua {pair}. Jaribu tena baadaye.\n<code>{e}</code>", reply_markup=kb)
         return
     stop.set()
     await anim
     if not sig:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
-        await cleanup_send(ctx, u.id, text="🟡 No strong signal right now. Try again in a few seconds.", reply_markup=kb)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pata Signal Nyingine", callback_data=f"otc|{pair}|{seconds}")]])
+        await cleanup_send(ctx, u.id, text="🟡 Hakuna signal kali sasa. Jaribu tena baada ya sekunde chache.", reply_markup=kb)
         return
     if not db.has_active_licence(u.id):
         db.increment_free(u.id)
     db.record_signal(u.id, pair, sig.direction, seconds, sig.entry, sig.strength)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"otc|{pair}|{seconds}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pata Signal Nyingine", callback_data=f"otc|{pair}|{seconds}")]])
     await cleanup_send(
         ctx, u.id,
         photo=signal_image(sig.direction),
@@ -347,19 +360,19 @@ async def cb_picks(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         best = await engine.best_timeframe(pair)
     except Exception as e:
         stop.set(); await anim
-        await cleanup_send(ctx, u.id, text=f"⚠️ Could not analyze {pair}. Try again shortly.\n<code>{e}</code>")
+        await cleanup_send(ctx, u.id, text=f"⚠️ Imeshindwa kuchambua {pair}. Jaribu tena baadaye.\n<code>{e}</code>")
         return
     stop.set()
     await anim
     if not best:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"picks|{pair}")]])
-        await cleanup_send(ctx, u.id, text="🟡 No signal available — try again in a few minutes.", reply_markup=kb)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pata Signal Nyingine", callback_data=f"picks|{pair}")]])
+        await cleanup_send(ctx, u.id, text="🟡 Hakuna signal sasa — jaribu tena baada ya dakika chache.", reply_markup=kb)
         return
     tf, sig = best
     if not db.has_active_licence(u.id):
         db.increment_free(u.id)
     sid = db.record_signal(u.id, pair, sig.direction, tf * 60, sig.entry, sig.strength)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Get More Signal", callback_data=f"picks|{pair}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Pata Signal Nyingine", callback_data=f"picks|{pair}")]])
     await cleanup_send(
         ctx, u.id,
         photo=signal_image(sig.direction),
@@ -382,7 +395,7 @@ async def cb_auto(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     ]]
     await cleanup_send(
         ctx, u.id,
-        text=f"🤖 <b>Auto Signal — {pair}</b>\nChoose expiry:",
+        text=f"🤖 <b>Signal Otomatiki — {pair}</b>\nChagua muda:",
         reply_markup=InlineKeyboardMarkup(rows),
     )
 async def cb_auto_tf(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -398,10 +411,10 @@ async def cb_auto_tf(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     old = AUTO_TASKS.pop(u.id, None)
     if old:
         old.cancel()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Stop Auto", callback_data="auto_stop")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Simamisha Otomatiki", callback_data="auto_stop")]])
     await cleanup_send(
         ctx, u.id,
-        text=f"🤖 Auto-scan started for <b>{pair}</b> ({tf} min). Strong signals will be sent automatically.",
+        text=f"🤖 Uchunguzi otomatiki umeanza kwa <b>{pair}</b> ({tf} min). Signals kali zitatumwa moja kwa moja.",
         reply_markup=kb,
     )
     AUTO_TASKS[u.id] = ctx.application.create_task(_auto_loop(ctx, u.id, pair, tf))
@@ -411,13 +424,13 @@ async def cb_auto_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     t = AUTO_TASKS.pop(q.from_user.id, None)
     if t:
         t.cancel()
-    await cleanup_send(ctx, q.from_user.id, text="⏹ Auto-scan stopped.", reply_markup=welcome_markup())
+    await cleanup_send(ctx, q.from_user.id, text="⏹ Uchunguzi otomatiki umesimamishwa.", reply_markup=welcome_markup())
 async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf: int) -> None:
     try:
         while True:
             ok, _ = db.can_request_signal(user_id)
             if not ok:
-                await ctx.bot.send_message(chat_id=user_id, text="🔒 Free signals exhausted. Auto-scan stopped.")
+                await ctx.bot.send_message(chat_id=user_id, text="🔒 Signals za bure zimeisha. Uchunguzi otomatiki umesimama.")
                 return
             try:
                 sig = await engine.analyze(pair, tf_min=tf)
@@ -428,7 +441,7 @@ async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf
                 if not db.has_active_licence(user_id):
                     db.increment_free(user_id)
                 sid = db.record_signal(user_id, pair, sig.direction, tf * 60, sig.entry, sig.strength)
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Stop Auto", callback_data="auto_stop")]])
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Simamisha Otomatiki", callback_data="auto_stop")]])
                 await cleanup_send(
                     ctx, user_id,
                     photo=signal_image(sig.direction),
@@ -486,54 +499,31 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(msg)
         return
     await update.message.reply_text(
-        "Send /start to open the menu, or paste a licence code (format: <code>EW-XXXXXXXXXX</code>).",
+        "Tuma /start kufungua menyu, au bandika nambari ya leseni (mfano: <code>EW-XXXXXXXXXX</code>).",
         parse_mode=ParseMode.HTML,
     )
 # ----------------------------------------------------------------------------
 # join requests
 # ----------------------------------------------------------------------------
 async def on_join_request(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Record that user sent a join request. Admin approves via channel — bot just checks."""
     req: ChatJoinRequest = update.chat_join_request
     if req.chat.id != CHANNEL_ID:
         return
     user = req.from_user
     db.add_join_request(user.id, req.chat.id)
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Approve", callback_data=f"jr|ok|{user.id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"jr|no|{user.id}"),
-    ]])
     try:
         await ctx.bot.send_message(
-            chat_id=ADMIN_ID,
+            chat_id=user.id,
             text=(
-                f"📥 <b>New channel join request</b>\n\n"
-                f"User: <a href='tg://user?id={user.id}'>{user.first_name or user.id}</a>\n"
-                f"Username: @{user.username or '—'}\n"
-                f"ID: <code>{user.id}</code>"
+                "📥 <b>Ombi limepokelewa!</b>\n\n"
+                "Ombi lako limetumwa kwa admin wa channel.\n"
+                "Ukiapprove, rudi utume /start kupata signals. ✅"
             ),
             parse_mode=ParseMode.HTML,
-            reply_markup=kb,
         )
-    except Exception as e:
-        log.warning("could not notify admin of join request: %s", e)
-async def cb_join_decision(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    await q.answer()
-    if not is_admin(q.from_user.id):
-        return
-    _, action, uid_s = q.data.split("|", 2)
-    uid = int(uid_s)
-    row = db.pop_join_request(uid)
-    chat_id = row["chat_id"] if row else CHANNEL_ID
-    try:
-        if action == "ok":
-            await ctx.bot.approve_chat_join_request(chat_id=chat_id, user_id=uid)
-            await q.edit_message_text(q.message.text_html + "\n\n✅ <b>Approved</b>", parse_mode=ParseMode.HTML)
-        else:
-            await ctx.bot.decline_chat_join_request(chat_id=chat_id, user_id=uid)
-            await q.edit_message_text(q.message.text_html + "\n\n❌ <b>Rejected</b>", parse_mode=ParseMode.HTML)
-    except Exception as e:
-        await q.edit_message_text(q.message.text_html + f"\n\n⚠️ Failed: {e}", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
 # ----------------------------------------------------------------------------
 # admin commands
 # ----------------------------------------------------------------------------
@@ -545,7 +535,7 @@ ADMIN_HELP = (
     "/ban &lt;user_id&gt; — ban a user\n"
     "/unban &lt;user_id&gt; — unban a user\n"
     "/broadcast &lt;message&gt; — broadcast to everyone\n"
-    "/setimage buy|sell &lt;url&gt; — change signal image\n"
+    "/setimage buy|sell|welcome &lt;url&gt; — change signal/welcome image\n"
     "/setbroker &lt;name&gt; &lt;url&gt; — add/update broker link\n"
     "/removebroker &lt;name&gt; — remove broker link\n"
     "/listbrokers — list broker links\n"
@@ -616,10 +606,31 @@ async def cmd_broadcast(update, ctx):
     await update.message.reply_text(f"📢 Broadcast done. Sent: {sent}, Failed: {failed}")
 @_admin_only
 async def cmd_setimage(update, ctx):
-    if len(ctx.args) < 2 or ctx.args[0] not in ("buy", "sell"):
-        await update.message.reply_text("Usage: /setimage buy|sell <url>"); return
-    db.set_setting(f"img_{ctx.args[0]}", ctx.args[1])
-    await update.message.reply_text(f"✅ {ctx.args[0].upper()} image updated.")
+    args = ctx.args
+    if not args or args[0] not in ("buy", "sell", "welcome"):
+        await update.message.reply_text(
+            "📷 Usage:
+"
+            "1. Tuma picha na caption: /setimage buy
+"
+            "2. Au reply picha na: /setimage sell
+
+"
+            "Types: buy · sell · welcome",
+        )
+        return
+    kind = args[0]
+    photo = update.message.photo
+    if not photo and update.message.reply_to_message:
+        photo = update.message.reply_to_message.photo
+    if not photo:
+        await update.message.reply_text(
+            f"📷 Tuma picha na caption /setimage {kind} au reply picha na amri hiyo."
+        )
+        return
+    file_id = photo[-1].file_id
+    db.set_setting(f"img_{kind}", file_id)
+    await update.message.reply_text(f"✅ {kind.upper()} image imesanikwa!")
 @_admin_only
 async def cmd_setbroker(update, ctx):
     if len(ctx.args) < 2:
@@ -683,6 +694,19 @@ async def licence_warner(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ----------------------------------------------------------------------------
 # health server
 # ----------------------------------------------------------------------------
+async def cmd_setimage_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin sends a photo with caption like: /setimage buy"""
+    caption = (update.message.caption or "").strip().lower()
+    for kind in ("buy", "sell", "welcome"):
+        if kind in caption:
+            file_id = update.message.photo[-1].file_id
+            db.set_setting(f"img_{kind}", file_id)
+            await update.message.reply_text(f"✅ {kind.upper()} image imesanikwa!")
+            return
+    await update.message.reply_text(
+        "📷 Andika caption: /setimage buy, /setimage sell, au /setimage welcome"
+    )
+
 async def _health(_request): return web.Response(text="ok")
 async def _run_health_server() -> None:
     app = web.Application()
@@ -728,9 +752,9 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(cb_auto_tf, pattern=r"^autotf\|"))
     app.add_handler(CallbackQueryHandler(cb_auto_stop, pattern=r"^auto_stop$"))
     app.add_handler(CallbackQueryHandler(cb_picks, pattern=r"^picks\|"))
-    app.add_handler(CallbackQueryHandler(cb_join_decision, pattern=r"^jr\|"))
     app.add_handler(ChatJoinRequestHandler(on_join_request))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.PHOTO & filters.CAPTION & filters.User(ADMIN_ID), cmd_setimage_photo))
     return app
 def main() -> None:
     app = build_app()
