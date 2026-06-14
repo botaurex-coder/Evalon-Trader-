@@ -120,17 +120,29 @@ def _otc_transform(raw_dir: str) -> str:
     return out
 # --- public API ------------------------------------------------------------
 async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
-    df = await fetch_candles(pair, tf_min=tf_min, n=120)
-    raw, strength = _consensus(df)
-    entry = float(df["close"].iloc[-1])
-    if pair.endswith(" OTC"):
-        if raw == "NONE":
+    is_otc = pair.endswith(" OTC")
+    try:
+        df = await fetch_candles(pair, tf_min=tf_min, n=120)
+        raw, strength = _consensus(df)
+        entry = float(df["close"].iloc[-1])
+    except Exception:
+        if is_otc:
+            # OTC: no real data available, use random fallback
             raw = random.choice(["BUY", "SELL"])
             strength = 60
+            entry = None
+        else:
+            # Non-OTC: refuse to invent data
+            return None
+    else:
+        if is_otc and raw == "NONE":
+            raw = random.choice(["BUY", "SELL"])
+            strength = 60
+        elif not is_otc and raw == "NONE":
+            return None
+    if is_otc:
         final_dir = _otc_transform(raw)
     else:
-        if raw == "NONE":
-            return None
         final_dir = raw
     return Signal(direction=final_dir, strength=strength, entry=entry, raw_dir=raw)
 async def best_timeframe(pair: str) -> Optional[tuple[int, Signal]]:
