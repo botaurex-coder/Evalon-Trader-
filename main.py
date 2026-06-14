@@ -609,14 +609,7 @@ async def cmd_setimage(update, ctx):
     args = ctx.args
     if not args or args[0] not in ("buy", "sell", "welcome"):
         await update.message.reply_text(
-            "📷 Usage:
-"
-            "1. Tuma picha na caption: /setimage buy
-"
-            "2. Au reply picha na: /setimage sell
-
-"
-            "Types: buy · sell · welcome",
+            "📷 Usage:\n1. Tuma picha na caption: /setimage buy\n2. Au reply picha na: /setimage sell\n\nTypes: buy · sell · welcome",
         )
         return
     kind = args[0]
