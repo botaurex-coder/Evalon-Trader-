@@ -505,6 +505,33 @@ def has_join_request(user_id: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 10-minute trial
+# ---------------------------------------------------------------------------
+TRIAL_SECONDS = 10 * 60  # 10 minutes
+
+def start_trial(user_id: int) -> None:
+    """Mark trial as started now."""
+    with db() as c:
+        c.execute(
+            "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO NOTHING",
+            (f"trial_start_{user_id}", str(int(time.time()))),
+        )
+
+def get_trial_status(user_id: int) -> str:
+    """Returns: 'not_started' | 'active' | 'expired'"""
+    with db() as c:
+        row = c.execute(
+            "SELECT v FROM settings WHERE k=?", (f"trial_start_{user_id}",)
+        ).fetchone()
+    if not row:
+        return "not_started"
+    started_at = int(row["v"])
+    if int(time.time()) - started_at < TRIAL_SECONDS:
+        return "active"
+    return "expired"
+
+
+# ---------------------------------------------------------------------------
 # OTC format state
 # ---------------------------------------------------------------------------
 def get_otc_state():
