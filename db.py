@@ -305,6 +305,9 @@ def has_active_licence(user_id: int) -> bool:
 
 
 def can_request_signal(user_id: int) -> tuple[bool, str]:
+    import config
+    if user_id == config.ADMIN_ID:
+        return True, ""
     u = get_user(user_id)
     if not u:
         return False, "User not found."
@@ -314,7 +317,6 @@ def can_request_signal(user_id: int) -> tuple[bool, str]:
         return True, ""
     if u["free_used"] < 3:
         return True, ""
-    import config
     return False, (
         "🔒 You used all 3 free signals.\n\n"
         "Activate a licence to keep getting signals.\n"
