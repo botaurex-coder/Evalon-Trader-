@@ -607,7 +607,7 @@ async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf
                     caption=signal_caption(pair, sig.direction, tf * 60, sig.strength, entry=sig.entry),
                     reply_markup=kb,
                 )
-                await _schedule_result(ctx, user_id, sid, pair, sig.direction, sig.entry, tf)
+                ctx.application.create_task(_schedule_result(ctx, user_id, sid, pair, sig.direction, sig.entry, tf))
                 await asyncio.sleep(max(60, tf * 60))
             else:
                 await asyncio.sleep(20)
@@ -622,9 +622,21 @@ async def _schedule_result(ctx, user_id: int, sid: int, pair: str, direction: st
         return
     # Wait exactly tf_min after signal was sent
     await asyncio.sleep(tf_min * 60)
-    exit_price = await latest_price(pair)
+    # Try to get exit price — retry up to 5 times with 10s intervals
+    exit_price = None
+    log.info("_schedule_result: fetching exit price for %s", pair)
+    for attempt in range(5):
+        exit_price = await latest_price(pair)
+        log.info("_schedule_result attempt %d: exit_price=%s", attempt+1, exit_price)
+        if exit_price is not None:
+            break
+        await asyncio.sleep(10)
     if exit_price is None or entry is None:
         db.finalize_signal(sid, None, "DOJI")
+        try:
+            await cleanup_send(ctx, user_id, text=f"➖ <b>DOJI</b> — {pair}\n📈 Signal: {direction} | {tf_min} min")
+        except Exception:
+            pass
         return
     delta = exit_price - entry
     eps = abs(entry) * 1e-5
