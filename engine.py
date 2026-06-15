@@ -202,16 +202,16 @@ async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
                 return None
         except Exception:
             pass
-    # Confirmation: wait 10 seconds and re-check direction
+    # Confirmation: wait 10 seconds and check if price moved in signal direction
     await _asyncio.sleep(10)
     try:
-        df2 = await fetch_candles(pair, tf_min=tf_min, n=120)
-        raw2, strength2 = _consensus(df2)
-        if raw2 != raw:
-            return None  # direction changed — skip
-        # Use average strength
-        strength = (strength + strength2) // 2
-        entry = float(df2["close"].iloc[-1])
+        df2 = await fetch_candles(pair, tf_min=1, n=5)
+        new_price = float(df2["close"].iloc[-1])
+        if entry is not None:
+            moved_up = new_price > entry
+            if (raw == "BUY" and not moved_up) or (raw == "SELL" and moved_up):
+                return None  # price moving against signal — skip
+        entry = new_price
     except Exception:
         pass  # if re-check fails, proceed with original signal
     return Signal(direction=raw, strength=strength, entry=entry, raw_dir=raw)
