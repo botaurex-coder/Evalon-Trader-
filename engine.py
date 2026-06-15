@@ -176,7 +176,6 @@ async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
     - 1min expiry: must be near 1m support/resistance
     After signal found, waits 10 seconds and confirms direction still holds.
     """
-    import asyncio as _asyncio
     try:
         df = await fetch_candles(pair, tf_min=tf_min, n=120)
         raw, strength = _consensus(df)
@@ -202,18 +201,24 @@ async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
                 return None
         except Exception:
             pass
-    # Confirmation: wait 10 seconds and check if price moved in signal direction
+    # Confirmation: wait 10 seconds then check price via Twelve Data (real-time)
+    import asyncio as _asyncio
+    import requests as _req
+    from config import TWELVEDATA_KEY
     await _asyncio.sleep(10)
     try:
-        df2 = await fetch_candles(pair, tf_min=1, n=5)
-        new_price = float(df2["close"].iloc[-1])
+        sym = pair.replace(" ", "").replace("/", "")
+        url = f"https://api.twelvedata.com/price?symbol={pair}&apikey={TWELVEDATA_KEY}"
+        r = await _asyncio.to_thread(_req.get, url, timeout=8)
+        j = r.json()
+        new_price = float(j["price"])
         if entry is not None:
             moved_up = new_price > entry
             if (raw == "BUY" and not moved_up) or (raw == "SELL" and moved_up):
                 return None  # price moving against signal — skip
         entry = new_price
     except Exception:
-        pass  # if re-check fails, proceed with original signal
+        pass
     return Signal(direction=raw, strength=strength, entry=entry, raw_dir=raw)
 
 async def best_timeframe(pair: str, all_otc_pairs: list = None) -> Optional[tuple[int, Signal]]:
@@ -227,7 +232,6 @@ async def best_timeframe(pair: str, all_otc_pairs: list = None) -> Optional[tupl
                 return p, await analyze(p, tf_min=1)
             except Exception:
                 return p, None
-        import asyncio as _asyncio
         results = await _asyncio.gather(*[_scan_pair(p) for p in all_otc_pairs])
         for p, sig in results:
             if sig and (best_sig is None or sig.strength > best_sig.strength):
