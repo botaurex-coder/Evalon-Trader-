@@ -445,15 +445,20 @@ async def cb_otc_scan_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 # ----------------------------------------------------------------------------
 # OTC signal
 # ----------------------------------------------------------------------------
-def signal_caption(pair: str, direction: str, seconds: int, strength: int) -> str:
+def signal_caption(pair: str, direction: str, seconds: int, strength: int, entry: float = None) -> str:
     arrow = "Up 🟢" if direction == "BUY" else "Down 🔴"
     unit = f"{seconds} sec." if seconds < 60 else f"{seconds // 60} min."
-    return (
+    is_otc = "OTC" in pair
+    caption = (
         f"<b>{pair}</b>  {arrow}\n"
         f"🕐 In {unit}\n"
         f"📊 Signal strength: {strength}%\n"
-        f"🧠 AI Consensus"
     )
+    if not is_otc and entry is not None:
+        caption += f"💰 Price : {entry:.5f}\n"
+        caption += "⏳ Entry in 5 seconds\n"
+    caption += "🧠 AI Consensus"
+    return caption
 def signal_image(direction: str) -> str:
     return (db.get_setting("img_buy") or IMG_BUY) if direction == "BUY" else (db.get_setting("img_sell") or IMG_SELL)
 async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -530,7 +535,7 @@ async def cb_picks(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await cleanup_send(
         ctx, u.id,
         photo=signal_image(sig.direction),
-        caption=signal_caption(pair, sig.direction, tf * 60, sig.strength),
+        caption=signal_caption(pair, sig.direction, tf * 60, sig.strength, entry=sig.entry),
         reply_markup=kb,
     )
     ctx.application.create_task(_schedule_result(ctx, u.id, sid, pair, sig.direction, sig.entry, tf))
@@ -599,7 +604,7 @@ async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf
                 await cleanup_send(
                     ctx, user_id,
                     photo=signal_image(sig.direction),
-                    caption=signal_caption(pair, sig.direction, tf * 60, sig.strength),
+                    caption=signal_caption(pair, sig.direction, tf * 60, sig.strength, entry=sig.entry),
                     reply_markup=kb,
                 )
                 await _schedule_result(ctx, user_id, sid, pair, sig.direction, sig.entry, tf)
@@ -612,17 +617,14 @@ async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf
 # auto-result evaluation (non-OTC only)
 # ----------------------------------------------------------------------------
 async def _schedule_result(ctx, user_id: int, sid: int, pair: str, direction: str, entry: float, tf_min: int) -> None:
-    now = datetime.now(timezone.utc)
-    next_minute = (now.replace(second=0, microsecond=0) + __import__("datetime").timedelta(minutes=1))
-    wait_start = (next_minute - now).total_seconds()
-    await asyncio.sleep(max(0, wait_start))
+    # OTC pairs — no result tracking
+    if pair.endswith(" OTC"):
+        return
+    # Wait exactly tf_min after signal was sent
     await asyncio.sleep(tf_min * 60)
     exit_price = await latest_price(pair)
-    if exit_price is None:
+    if exit_price is None or entry is None:
         db.finalize_signal(sid, None, "DOJI")
-        return
-    if entry is None:
-        db.finalize_signal(sid, exit_price, "DOJI")
         return
     delta = exit_price - entry
     eps = abs(entry) * 1e-5
