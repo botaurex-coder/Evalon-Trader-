@@ -174,7 +174,9 @@ async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
     """Auto scan with filters:
     - 5min expiry: 1H trend filter (signal must match 1H trend)
     - 1min expiry: must be near 1m support/resistance
+    After signal found, waits 10 seconds and confirms direction still holds.
     """
+    import asyncio as _asyncio
     try:
         df = await fetch_candles(pair, tf_min=tf_min, n=120)
         raw, strength = _consensus(df)
@@ -189,17 +191,29 @@ async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
             df_1h = await fetch_candles(pair, tf_min=60, n=60)
             trend = _h1_trend(df_1h)
             if trend != "NONE" and trend != raw:
-                return None  # signal against 1H trend — skip
+                return None
         except Exception:
-            pass  # no 1H data — allow signal
+            pass
     elif tf_min == 1:
         # Support/resistance filter
         try:
             df_1m = await fetch_candles(pair, tf_min=1, n=60)
             if not _near_sr(df_1m):
-                return None  # not near S/R — skip
+                return None
         except Exception:
             pass
+    # Confirmation: wait 10 seconds and re-check direction
+    await _asyncio.sleep(10)
+    try:
+        df2 = await fetch_candles(pair, tf_min=tf_min, n=120)
+        raw2, strength2 = _consensus(df2)
+        if raw2 != raw:
+            return None  # direction changed — skip
+        # Use average strength
+        strength = (strength + strength2) // 2
+        entry = float(df2["close"].iloc[-1])
+    except Exception:
+        pass  # if re-check fails, proceed with original signal
     return Signal(direction=raw, strength=strength, entry=entry, raw_dir=raw)
 
 async def best_timeframe(pair: str, all_otc_pairs: list = None) -> Optional[tuple[int, Signal]]:
