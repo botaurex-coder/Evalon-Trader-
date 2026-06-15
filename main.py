@@ -206,11 +206,10 @@ async def cb_show_pairs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ])
         await cleanup_send(ctx, u.id, text=f"{emoji} <b>{session}</b>", reply_markup=kb)
     else:
-        await cleanup_send(
-            ctx, u.id,
-            text=f"⚪ <b>Market Closed</b>\n\n📊 <b>Select a pair</b> (OTC market):",
-            reply_markup=pairs_keyboard("otc"),
-        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🕐 OTC Pairs", callback_data="market|otc")],
+        ])
+        await cleanup_send(ctx, u.id, text=f"⚪ <b>Market Closed</b>", reply_markup=kb)
 # ----------------------------------------------------------------------------
 # market type selection
 # ----------------------------------------------------------------------------
@@ -335,18 +334,11 @@ async def cb_pair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
     is_otc = pair.endswith(" OTC")
-    if is_otc and open_now:
-        await cleanup_send(
-            ctx, u.id,
-            text="⚠️ Live market is open. Please pick a non-OTC pair.",
-            reply_markup=pairs_keyboard(),
-        )
-        return
     if not is_otc and not open_now:
         await cleanup_send(
             ctx, u.id,
             text="⚠️ Live market is closed. Please pick an OTC pair.",
-            reply_markup=pairs_keyboard(),
+            reply_markup=pairs_keyboard("otc"),
         )
         return
     if is_otc:
@@ -519,7 +511,7 @@ async def cb_picks(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     stop = asyncio.Event()
     anim = asyncio.create_task(animate_loop(ctx, u.id, msg_id, pair, stop))
     try:
-        best = await engine.best_timeframe(pair)
+        best = await engine.best_timeframe(pair, all_otc_pairs=OTC_PAIRS if pair.endswith(" OTC") else None)
     except Exception as e:
         stop.set(); await anim
         await cleanup_send(ctx, u.id, text=f"⚠️ Could not analyze {pair}. Try again shortly.\n<code>{e}</code>")
@@ -595,7 +587,7 @@ async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf
                 await ctx.bot.send_message(chat_id=user_id, text="🔒 Free signals exhausted. Auto-scan stopped.")
                 return
             try:
-                sig = await engine.analyze(pair, tf_min=tf)
+                sig = await engine.auto_scan(pair, tf_min=tf)
             except Exception as e:
                 log.warning("auto analyze error: %s", e)
                 await asyncio.sleep(30); continue
