@@ -137,9 +137,91 @@ async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
         final_dir = _otc_transform(raw)
     else:
         final_dir = raw
+    # Cap strength at 98, flip at 98
+    if strength > 98:
+        strength = 98
+    if strength == 98:
+        final_dir = "SELL" if final_dir == "BUY" else "BUY"
     return Signal(direction=final_dir, strength=strength, entry=entry, raw_dir=raw)
-async def best_timeframe(pair: str) -> Optional[tuple[int, Signal]]:
-    """Bot Picks: scan 1m, 2m, 3m and return the strongest passing signal."""
+def _h1_trend(df_1h: pd.DataFrame) -> str:
+    """Returns 'BUY', 'SELL', or 'NONE' based on 1H EMA trend."""
+    close = df_1h["close"]
+    if len(close) < 50:
+        return "NONE"
+    e9 = ind.ema(close, 9).iloc[-1]
+    e21 = ind.ema(close, 21).iloc[-1]
+    e50 = ind.ema(close, 50).iloc[-1]
+    if e9 > e21 > e50:
+        return "BUY"
+    if e9 < e21 < e50:
+        return "SELL"
+    return "NONE"
+
+def _near_sr(df_1m: pd.DataFrame, buffer_pct: float = 0.001) -> bool:
+    """Returns True if price is near 1m support or resistance level."""
+    close = df_1m["close"]
+    high = df_1m["high"]
+    low = df_1m["low"]
+    price = close.iloc[-1]
+    # Swing highs and lows from last 50 candles
+    resistance = high.iloc[-50:].max()
+    support = low.iloc[-50:].min()
+    near_res = abs(price - resistance) / price < buffer_pct
+    near_sup = abs(price - support) / price < buffer_pct
+    return near_res or near_sup
+
+async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
+    """Auto scan with filters:
+    - 5min expiry: 1H trend filter (signal must match 1H trend)
+    - 1min expiry: must be near 1m support/resistance
+    """
+    try:
+        df = await fetch_candles(pair, tf_min=tf_min, n=120)
+        raw, strength = _consensus(df)
+        entry = float(df["close"].iloc[-1])
+    except Exception:
+        return None
+    if raw == "NONE":
+        return None
+    if tf_min == 5:
+        # 1H trend filter
+        try:
+            df_1h = await fetch_candles(pair, tf_min=60, n=60)
+            trend = _h1_trend(df_1h)
+            if trend != "NONE" and trend != raw:
+                return None  # signal against 1H trend — skip
+        except Exception:
+            pass  # no 1H data — allow signal
+    elif tf_min == 1:
+        # Support/resistance filter
+        try:
+            df_1m = await fetch_candles(pair, tf_min=1, n=60)
+            if not _near_sr(df_1m):
+                return None  # not near S/R — skip
+        except Exception:
+            pass
+    return Signal(direction=raw, strength=strength, entry=entry, raw_dir=raw)
+
+async def best_timeframe(pair: str, all_otc_pairs: list = None) -> Optional[tuple[int, Signal]]:
+    """Bot Picks: scan 1m, 2m, 3m and return the strongest passing signal.
+    For OTC pairs, scans all OTC pairs and returns best signal."""
+    if pair.endswith(" OTC") and all_otc_pairs:
+        best_sig = None
+        best_pair = None
+        async def _scan_pair(p):
+            try:
+                return p, await analyze(p, tf_min=1)
+            except Exception:
+                return p, None
+        import asyncio as _asyncio
+        results = await _asyncio.gather(*[_scan_pair(p) for p in all_otc_pairs])
+        for p, sig in results:
+            if sig and (best_sig is None or sig.strength > best_sig.strength):
+                best_sig = sig
+                best_pair = p
+        if best_sig:
+            return 1, best_sig
+        return None
     best: Optional[tuple[int, Signal]] = None
     for tf in (1, 2, 3):
         try:
@@ -150,6 +232,6 @@ async def best_timeframe(pair: str) -> Optional[tuple[int, Signal]]:
             continue
         if sig.strength < 70:
             continue
-        if best is None or sig.strength > best[1].strength:
+        if best is None or sig.strength < best[1].strength:
             best = (tf, sig)
     return best
