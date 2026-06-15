@@ -634,7 +634,7 @@ async def _schedule_result(ctx, user_id: int, sid: int, pair: str, direction: st
     if exit_price is None or entry is None:
         db.finalize_signal(sid, None, "DOJI")
         try:
-            await cleanup_send(ctx, user_id, text=f"➖ <b>DOJI</b> — {pair}\n📈 Signal: {direction} | {tf_min} min")
+            await cleanup_send(ctx, user_id, text=f"➖ <b>DOJI</b> — {pair}\n📈 Signal: {direction} | {tf_min} min\n💰 Entry: {entry:.5f} → Exit: N/A")
         except Exception:
             pass
         return
