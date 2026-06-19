@@ -142,6 +142,24 @@ async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
         strength = 98
     if strength == 98:
         final_dir = "SELL" if final_dir == "BUY" else "BUY"
+    # Non-OTC: 10-second confirmation via Twelve Data real-time price
+    if not is_otc:
+        import asyncio as _asyncio
+        import requests as _req
+        from config import TWELVEDATA_KEY
+        await _asyncio.sleep(10)
+        try:
+            url = f"https://api.twelvedata.com/price?symbol={pair}&apikey={TWELVEDATA_KEY}"
+            r = await _asyncio.to_thread(_req.get, url, timeout=8)
+            j = r.json()
+            new_price = float(j["price"])
+            if entry is not None:
+                moved_up = new_price > entry
+                if (final_dir == "BUY" and not moved_up) or (final_dir == "SELL" and moved_up):
+                    return None
+            entry = new_price
+        except Exception:
+            pass
     return Signal(direction=final_dir, strength=strength, entry=entry, raw_dir=raw)
 def _h1_trend(df_1h: pd.DataFrame) -> str:
     """Returns 'BUY', 'SELL', or 'NONE' based on 1H EMA trend."""
@@ -193,32 +211,60 @@ async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
                 return None
         except Exception:
             pass
+        # Pullback + reversal filter on 1m candles
+        # Wait for 1m candles to pull back then reverse in signal direction
+        try:
+            import asyncio as _aio
+            # Check current 1m candles for pullback
+            df_1m = await fetch_candles(pair, tf_min=1, n=10)
+            close_1m = df_1m["close"]
+            # Detect pullback: last 2-3 candles moved against direction
+            c1 = close_1m.iloc[-1]
+            c2 = close_1m.iloc[-2]
+            c3 = close_1m.iloc[-3]
+            if raw == "BUY":
+                in_pullback = c2 < c3  # last candles going down (pullback)
+            else:
+                in_pullback = c2 > c3  # last candles going up (pullback)
+            if in_pullback:
+                # Wait up to 3 minutes for reversal
+                for _ in range(18):  # check every 10 seconds, max 3 min
+                    await _aio.sleep(10)
+                    try:
+                        df_new = await fetch_candles(pair, tf_min=1, n=5)
+                        cn = df_new["close"]
+                        new_c1 = cn.iloc[-1]
+                        new_c2 = cn.iloc[-2]
+                        # Reversal detected
+                        if raw == "BUY" and new_c1 > new_c2:
+                            entry = float(new_c1)
+                            break
+                        elif raw == "SELL" and new_c1 < new_c2:
+                            entry = float(new_c1)
+                            break
+                    except Exception:
+                        pass
+                else:
+                    return None  # no reversal within 3 min — skip
+        except Exception:
+            pass
     elif tf_min == 1:
         # Support/resistance filter
         try:
             df_1m = await fetch_candles(pair, tf_min=1, n=60)
             if not _near_sr(df_1m):
                 return None
+            # Candle confirmation: last closed candle must match direction
+            last_open = float(df_1m["open"].iloc[-2])
+            last_close = float(df_1m["close"].iloc[-2])
+            candle_bullish = last_close > last_open
+            candle_bearish = last_close < last_open
+            if raw == "BUY" and not candle_bullish:
+                return None
+            if raw == "SELL" and not candle_bearish:
+                return None
         except Exception:
             pass
-    # Confirmation: wait 10 seconds then check price via Twelve Data (real-time)
-    import asyncio as _asyncio
-    import requests as _req
-    from config import TWELVEDATA_KEY
-    await _asyncio.sleep(10)
-    try:
-        sym = pair.replace(" ", "").replace("/", "")
-        url = f"https://api.twelvedata.com/price?symbol={pair}&apikey={TWELVEDATA_KEY}"
-        r = await _asyncio.to_thread(_req.get, url, timeout=8)
-        j = r.json()
-        new_price = float(j["price"])
-        if entry is not None:
-            moved_up = new_price > entry
-            if (raw == "BUY" and not moved_up) or (raw == "SELL" and moved_up):
-                return None  # price moving against signal — skip
-        entry = new_price
-    except Exception:
-        pass
     return Signal(direction=raw, strength=strength, entry=entry, raw_dir=raw)
 
 async def best_timeframe(pair: str, all_otc_pairs: list = None) -> Optional[tuple[int, Signal]]:
