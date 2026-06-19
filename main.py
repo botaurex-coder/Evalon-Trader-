@@ -467,10 +467,11 @@ async def cb_otc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     _, pair, secs = q.data.split("|", 2)
     seconds = int(secs)
     u = q.from_user
-    ok, why = db.can_request_signal(u.id)
-    if not ok:
-        await cleanup_send(ctx, u.id, text=why)
-        return
+    if not is_admin(u.id) and not db.has_active_licence(u.id):
+        if db.get_trial_status(u.id) == "expired":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")]])
+            await cleanup_send(ctx, u.id, text="⏰ <b>Trial Expired</b>\n\nYour 10-minute free trial has ended.\nContact admin to get unlimited signals.", reply_markup=kb)
+            return
     msg_id = await scan_animation(ctx, u.id, pair)
     stop = asyncio.Event()
     anim = asyncio.create_task(animate_loop(ctx, u.id, msg_id, pair, stop))
@@ -508,10 +509,11 @@ async def cb_picks(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await q.answer()
     pair = q.data.split("|", 1)[1]
     u = q.from_user
-    ok, why = db.can_request_signal(u.id)
-    if not ok:
-        await cleanup_send(ctx, u.id, text=why)
-        return
+    if not is_admin(u.id) and not db.has_active_licence(u.id):
+        if db.get_trial_status(u.id) == "expired":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")]])
+            await cleanup_send(ctx, u.id, text="⏰ <b>Trial Expired</b>\n\nYour 10-minute free trial has ended.\nContact admin to get unlimited signals.", reply_markup=kb)
+            return
     msg_id = await scan_animation(ctx, u.id, pair)
     stop = asyncio.Event()
     anim = asyncio.create_task(animate_loop(ctx, u.id, msg_id, pair, stop))
@@ -563,10 +565,11 @@ async def cb_auto_tf(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     _, pair, tfs = q.data.split("|", 2)
     tf = int(tfs)
     u = q.from_user
-    ok, why = db.can_request_signal(u.id)
-    if not ok:
-        await cleanup_send(ctx, u.id, text=why)
-        return
+    if not is_admin(u.id) and not db.has_active_licence(u.id):
+        if db.get_trial_status(u.id) == "expired":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Contact Admin", url=f"https://t.me/{SUPPORT_BOT}")]])
+            await cleanup_send(ctx, u.id, text="⏰ <b>Trial Expired</b>\n\nYour 10-minute free trial has ended.\nContact admin to get unlimited signals.", reply_markup=kb)
+            return
     old = AUTO_TASKS.pop(u.id, None)
     if old:
         old.cancel()
@@ -587,10 +590,10 @@ async def cb_auto_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def _auto_loop(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, pair: str, tf: int) -> None:
     try:
         while True:
-            ok, _ = db.can_request_signal(user_id)
-            if not ok:
-                await ctx.bot.send_message(chat_id=user_id, text="🔒 Free signals exhausted. Auto-scan stopped.")
-                return
+            if not db.has_active_licence(user_id) and not is_admin(user_id):
+                if db.get_trial_status(user_id) == "expired":
+                    await ctx.bot.send_message(chat_id=user_id, text="⏰ Your 10-minute free trial has ended. Contact admin to get unlimited signals.")
+                    return
             try:
                 sig = await engine.auto_scan(pair, tf_min=tf)
             except Exception as e:
@@ -620,23 +623,24 @@ async def _schedule_result(ctx, user_id: int, sid: int, pair: str, direction: st
     # OTC pairs — no result tracking
     if pair.endswith(" OTC"):
         return
+    if entry is None:
+        return
     # Wait exactly tf_min after signal was sent
     await asyncio.sleep(tf_min * 60)
-    # Try to get exit price — retry up to 5 times with 10s intervals
+    # Get exit price from candle data at expiry time
     exit_price = None
-    log.info("_schedule_result: fetching exit price for %s", pair)
-    for attempt in range(5):
-        exit_price = await latest_price(pair)
-        log.info("_schedule_result attempt %d: exit_price=%s", attempt+1, exit_price)
-        if exit_price is not None:
-            break
-        await asyncio.sleep(10)
-    if exit_price is None or entry is None:
-        db.finalize_signal(sid, None, "DOJI")
+    for attempt in range(3):
         try:
-            await cleanup_send(ctx, user_id, text=f"➖ <b>DOJI</b> — {pair}\n📈 Signal: {direction} | {tf_min} min\n💰 Entry: {entry:.5f} → Exit: N/A")
+            from market import fetch_candles as _fc
+            df = await _fc(pair, tf_min=1, n=5)
+            exit_price = float(df["close"].iloc[-1])
+            if exit_price is not None:
+                break
         except Exception:
             pass
+        await asyncio.sleep(5)
+    if exit_price is None:
+        db.finalize_signal(sid, None, "DOJI")
         return
     delta = exit_price - entry
     eps = abs(entry) * 1e-5
@@ -711,6 +715,7 @@ ADMIN_HELP = (
     "/revoke &lt;code&gt; — revoke a code\n"
     "/users — list users (latest first)\n"
     "/ban &lt;user_id&gt; — ban a user\n"
+    "/banned — list banned users\n"
     "/unban &lt;user_id&gt; — unban a user\n"
     "/broadcast &lt;message&gt; — broadcast to everyone\n"
     "/setimage buy|sell|welcome — set image (send photo with caption)\n"
@@ -762,6 +767,18 @@ async def cmd_ban(update, ctx):
         await update.message.reply_text("Usage: /ban <user_id>"); return
     db.set_banned(int(ctx.args[0]), True)
     await update.message.reply_text("🚫 User banned.")
+@_admin_only
+async def cmd_banned(update, ctx):
+    banned = db.list_banned()
+    if not banned:
+        await update.message.reply_text("No banned users.")
+        return
+    lines = []
+    for u in banned:
+        name = u.get("first_name") or u.get("username") or "—"
+        lines.append(f"🚫 {name} | ID: <code>{u['user_id']}</code>")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
 @_admin_only
 async def cmd_unban(update, ctx):
     if not ctx.args:
@@ -905,6 +922,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("revoke", cmd_revoke))
     app.add_handler(CommandHandler("users", cmd_users))
     app.add_handler(CommandHandler("ban", cmd_ban))
+    app.add_handler(CommandHandler("banned", cmd_banned))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("setimage", cmd_setimage))
