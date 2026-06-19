@@ -289,6 +289,13 @@ def is_banned(user_id: int) -> bool:
     u = get_user(user_id)
     return bool(u and u["banned"])
 
+def list_banned() -> list:
+    with db() as c:
+        rows = c.execute(
+            "SELECT user_id, username, first_name FROM users WHERE banned=1"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 
 def increment_free(user_id: int) -> None:
     with db() as c:
