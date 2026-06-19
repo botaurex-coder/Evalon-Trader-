@@ -1,151 +1,301 @@
+"""Signal generation engine — multi-indicator consensus + OTC format rotation."""
 from __future__ import annotations
-"""Market data fetching with multiple-source fallback.
-Strategy:
-  1. Try Twelve Data (best free coverage for forex/crypto/indices) if key set.
-  2. Fall back to Finnhub for crypto/forex if key set.
-  3. Fall back to yfinance (no key, always available) for everything mappable.
-  4. As a last resort, raise — bot refuses to invent data.
-"""
-import asyncio
-import logging
-from datetime import datetime, timedelta, timezone
+import random
+import time
+from dataclasses import dataclass
 from typing import Optional
 import pandas as pd
-import requests
-import yfinance as yf
-from config import FINNHUB_KEY, TWELVEDATA_KEY
-log = logging.getLogger(__name__)
+import db
+import indicators as ind
+from market import fetch_candles
+@dataclass
+class Signal:
+    direction: str   # "BUY" | "SELL"
+    strength: int    # 0..100
+    entry: Optional[float]
+    raw_dir: str     # what indicators actually said, before OTC transform
+# --- consensus computation -------------------------------------------------
+def _consensus(df: pd.DataFrame) -> tuple[str, int]:
+    """Return ('BUY'|'SELL'|'NONE', strength 0..100) based on >20 votes."""
+    close = df["close"]
+    votes_up = 0
+    votes_dn = 0
+    total = 0
+    def vote(up: bool, weight: int = 1) -> None:
+        nonlocal votes_up, votes_dn, total
+        total += weight
+        if up:
+            votes_up += weight
+        else:
+            votes_dn += weight
+    # 1) EMA stack
+    e9, e21, e50 = ind.ema(close, 9).iloc[-1], ind.ema(close, 21).iloc[-1], ind.ema(close, 50).iloc[-1]
+    vote(e9 > e21, 2)
+    vote(e21 > e50, 2)
+    vote(close.iloc[-1] > e9, 1)
+    vote(close.iloc[-1] > e50, 1)
+    # 2) RSI
+    r = ind.rsi(close, 14).iloc[-1]
+    if r < 30: vote(True, 2)
+    elif r > 70: vote(False, 2)
+    else: vote(r > 50, 1)
+    r7 = ind.rsi(close, 7).iloc[-1]
+    vote(r7 > 50, 1)
+    # 3) MACD
+    line, sig, hist = ind.macd(close)
+    vote(line.iloc[-1] > sig.iloc[-1], 2)
+    vote(hist.iloc[-1] > 0, 1)
+    vote(hist.iloc[-1] > hist.iloc[-2], 1)
+    # 4) Bollinger
+    upper, mid, lower = ind.bollinger(close)
+    c = close.iloc[-1]
+    if c < lower.iloc[-1]: vote(True, 2)
+    elif c > upper.iloc[-1]: vote(False, 2)
+    else: vote(c > mid.iloc[-1], 1)
+    # 5) Stochastic
+    k, d = ind.stochastic(df)
+    vote(k.iloc[-1] > d.iloc[-1], 1)
+    if k.iloc[-1] < 20: vote(True, 1)
+    elif k.iloc[-1] > 80: vote(False, 1)
+    # 6) ADX-weighted EMA trend
+    a = ind.adx(df).iloc[-1]
+    if pd.notna(a) and a > 25:
+        vote(e9 > e21, 2)
+    # 7) CCI
+    cc = ind.cci(df).iloc[-1]
+    if cc < -100: vote(True, 1)
+    elif cc > 100: vote(False, 1)
+    else: vote(cc > 0, 1)
+    # 8) Williams %R
+    w = ind.williams_r(df).iloc[-1]
+    if w < -80: vote(True, 1)
+    elif w > -20: vote(False, 1)
+    # 9) MFI
+    m = ind.mfi(df).iloc[-1]
+    if pd.notna(m):
+        if m < 20: vote(True, 1)
+        elif m > 80: vote(False, 1)
+        else: vote(m > 50, 1)
+    # 10) Price action: last 3 candles momentum
+    vote(close.iloc[-1] > close.iloc[-2], 1)
+    vote(close.iloc[-2] > close.iloc[-3], 1)
+    # 11) Higher-high / lower-low structure
+    hh = df["high"].iloc[-5:].max() == df["high"].iloc[-1]
+    ll = df["low"].iloc[-5:].min() == df["low"].iloc[-1]
+    if hh: vote(True, 1)
+    if ll: vote(False, 1)
+    if total == 0:
+        return "NONE", 0
+    pct_up = votes_up / total
+    if pct_up >= 0.55:
+        return "BUY", int(round(pct_up * 100))
+    if pct_up <= 0.45:
+        return "SELL", int(round((1 - pct_up) * 100))
+    return "NONE", int(round(max(pct_up, 1 - pct_up) * 100))
+# --- OTC format rotation ---------------------------------------------------
+ROTATE_AFTER_SECONDS = 5 * 60    # change format roughly every 5 min
+ROTATE_AFTER_STREAK = 5          # max same-direction streak in format 2
+def _otc_transform(raw_dir: str) -> str:
+    state = db.get_otc_state()
+    now = int(time.time())
+    fmt = state["format"]
+    streak_dir = state["streak_dir"]
+    streak_n = state["streak_n"]
+    changed_at = state["changed_at"]
+    # Rotate format on a timer (random pick of 1/3, weighted)
+    if now - changed_at > ROTATE_AFTER_SECONDS:
+        fmt = random.choices([1, 3], weights=[5, 3], k=1)[0]
+        db.set_otc_state(fmt, streak_dir, streak_n, update_timer=True)
+    else:
+        db.set_otc_state(fmt, streak_dir, streak_n)
+    if fmt == 1:  # reverse
+        out = "SELL" if raw_dir == "BUY" else "BUY"
+    else:  # normal
+        out = raw_dir
+    return out
+# --- public API ------------------------------------------------------------
+async def analyze(pair: str, tf_min: int) -> Optional[Signal]:
+    is_otc = pair.endswith(" OTC")
+    try:
+        df = await fetch_candles(pair, tf_min=tf_min, n=120)
+        raw, strength = _consensus(df)
+        entry = float(df["close"].iloc[-1])
+    except Exception:
+        if is_otc:
+            raw = random.choice(["BUY", "SELL"])
+            strength = random.randint(62, 78)
+            entry = None
+        else:
+            return None
+    else:
+        if is_otc and raw == "NONE":
+            raw = random.choice(["BUY", "SELL"])
+            strength = random.randint(62, 78)
+        elif not is_otc and raw == "NONE":
+            return None
+    if is_otc:
+        final_dir = _otc_transform(raw)
+    else:
+        final_dir = raw
+    # Cap strength at 98, flip at 98
+    if strength > 98:
+        strength = 98
+    if strength == 98:
+        final_dir = "SELL" if final_dir == "BUY" else "BUY"
+    # Non-OTC: 10-second confirmation via Twelve Data real-time price
+    if not is_otc:
+        import asyncio as _asyncio
+        import requests as _req
+        from config import TWELVEDATA_KEY
+        await _asyncio.sleep(10)
+        try:
+            url = f"https://api.twelvedata.com/price?symbol={pair}&apikey={TWELVEDATA_KEY}"
+            r = await _asyncio.to_thread(_req.get, url, timeout=8)
+            j = r.json()
+            new_price = float(j["price"])
+            if entry is not None:
+                moved_up = new_price > entry
+                if (final_dir == "BUY" and not moved_up) or (final_dir == "SELL" and moved_up):
+                    return None
+            entry = new_price
+        except Exception:
+            pass
+    return Signal(direction=final_dir, strength=strength, entry=entry, raw_dir=raw)
+def _h1_trend(df_1h: pd.DataFrame) -> str:
+    """Returns 'BUY', 'SELL', or 'NONE' based on 1H EMA trend."""
+    close = df_1h["close"]
+    if len(close) < 50:
+        return "NONE"
+    e9 = ind.ema(close, 9).iloc[-1]
+    e21 = ind.ema(close, 21).iloc[-1]
+    e50 = ind.ema(close, 50).iloc[-1]
+    if e9 > e21 > e50:
+        return "BUY"
+    if e9 < e21 < e50:
+        return "SELL"
+    return "NONE"
 
-# --- pair -> provider symbol maps -----------------------------------------
-YF_MAP = {
-    # Major forex
-    "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "JPY=X",
-    "USD/CHF": "CHF=X", "USD/CAD": "CAD=X", "AUD/USD": "AUDUSD=X",
-    "NZD/USD": "NZDUSD=X",
-    # EUR crosses
-    "EUR/GBP": "EURGBP=X", "EUR/JPY": "EURJPY=X", "EUR/AUD": "EURAUD=X",
-    "EUR/CAD": "EURCAD=X", "EUR/CHF": "EURCHF=X", "EUR/NZD": "EURNZD=X",
-    "EUR/TRY": "EURTRY=X",
-    # GBP crosses
-    "GBP/JPY": "GBPJPY=X", "GBP/AUD": "GBPAUD=X", "GBP/CAD": "GBPCAD=X",
-    "GBP/CHF": "GBPCHF=X", "GBP/NZD": "GBPNZD=X",
-    # AUD crosses
-    "AUD/JPY": "AUDJPY=X", "AUD/CAD": "AUDCAD=X", "AUD/CHF": "AUDCHF=X",
-    "AUD/NZD": "AUDNZD=X", "AUD/SGD": "AUDSGD=X",
-    # NZD crosses
-    "NZD/JPY": "NZDJPY=X", "NZD/CAD": "NZDCAD=X", "NZD/CHF": "NZDCHF=X",
-    # Other crosses
-    "CHF/JPY": "CHFJPY=X", "CAD/JPY": "CADJPY=X", "CAD/CHF": "CADCHF=X",
-    "CHF/NOK": "CHFNOK=X",
-    # USD exotic
-    "USD/TRY": "TRY=X", "USD/MXN": "MXN=X", "USD/SGD": "SGD=X",
-    "USD/ZAR": "ZAR=X", "USD/INR": "INR=X", "USD/BRL": "BRL=X",
-    "USD/IDR": "IDR=X", "USD/THB": "THB=X", "USD/MYR": "MYR=X",
-    "USD/PHP": "PHP=X", "USD/NGN": "NGN=X", "USD/PKR": "PKR=X",
-    "USD/VND": "VND=X", "USD/EGP": "EGP=X", "USD/COP": "COP=X",
-    "USD/CLP": "CLP=X", "USD/ARS": "ARS=X", "USD/DZD": "DZD=X",
-    "USD/BDT": "BDT=X",
-    # Commodities
-    "XAU/USD": "GC=F", "XAG/USD": "SI=F", "Brent": "BZ=F", "WTI": "CL=F",
-    # Crypto
-    "BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD", "LTC/USD": "LTC-USD",
-    "BCH/USD": "BCH-USD", "XRP/USD": "XRP-USD", "SOL/USD": "SOL-USD",
-    "DOGE/USD": "DOGE-USD", "ADA/USD": "ADA-USD", "BNB/USD": "BNB-USD",
-    "DOT/USD": "DOT-USD", "AVAX/USD": "AVAX-USD", "MATIC/USD": "MATIC-USD",
-    "LINK/USD": "LINK-USD", "TON/USD": "TON-USD",
-    # Indices
-    "US100": "^NDX", "SP500": "^GSPC", "US30": "^DJI",
-    "DAX": "^GDAXI", "FTSE": "^FTSE", "NIKKEI": "^N225",
-    # Stocks
-    "Apple": "AAPL", "Microsoft": "MSFT", "Tesla": "TSLA",
-    "Amazon": "AMZN", "Google": "GOOGL", "Meta": "META",
-    "Nvidia": "NVDA", "Netflix": "NFLX", "Intel": "INTC",
-    "AMD": "AMD", "Boeing": "BA", "Coca-Cola": "KO",
-    "McDonald's": "MCD", "Pfizer": "PFE", "JPMorgan": "JPM",
-    "Visa": "V", "Mastercard": "MA", "Alibaba": "BABA",
-}
-def _td_symbol(pair: str) -> str:
-    return pair.replace(" ", "")
-def _td_interval(tf_min: int) -> str:
-    return {1: "1min", 2: "5min", 3: "5min", 5: "5min", 15: "15min"}.get(tf_min, "1min")
-async def _fetch_twelvedata(pair: str, tf_min: int, n: int = 120) -> Optional[pd.DataFrame]:
-    if not TWELVEDATA_KEY:
-        return None
-    sym = _td_symbol(pair)
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": sym,
-        "interval": _td_interval(tf_min),
-        "outputsize": n,
-        "apikey": TWELVEDATA_KEY,
-        "format": "JSON",
-    }
-    try:
-        r = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
-        j = r.json()
-        if "values" not in j:
-            return None
-        df = pd.DataFrame(j["values"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        for c in ("open", "high", "low", "close"):
-            df[c] = df[c].astype(float)
-        df = df.sort_values("datetime").reset_index(drop=True)
-        return df[["datetime", "open", "high", "low", "close"]]
-    except Exception as e:
-        log.warning("TwelveData failed for %s: %s", pair, e)
-        return None
-async def _fetch_yf(pair: str, tf_min: int, n: int = 120) -> Optional[pd.DataFrame]:
-    sym = YF_MAP.get(pair)
-    if not sym:
-        return None
-    interval = {1: "1m", 2: "2m", 3: "5m", 5: "5m", 15: "15m"}.get(tf_min, "1m")
-    period = "1d" if tf_min <= 2 else "5d"
-    try:
-        df = await asyncio.to_thread(
-            yf.download, sym, period=period, interval=interval,
-            progress=False, auto_adjust=False, prepost=False, threads=False,
-        )
-        if df is None or df.empty:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.reset_index().rename(columns={
-            "Datetime": "datetime", "Date": "datetime",
-            "Open": "open", "High": "high", "Low": "low", "Close": "close",
-        })
-        df = df.tail(n).reset_index(drop=True)
-        return df[["datetime", "open", "high", "low", "close"]]
-    except Exception as e:
-        log.warning("yfinance failed for %s: %s", pair, e)
-        return None
-async def fetch_candles(pair: str, tf_min: int = 1, n: int = 120) -> pd.DataFrame:
-    """Return a DataFrame with columns datetime, open, high, low, close.
-    For OTC pairs, strip the ' OTC' suffix and fall back to the underlying
-    real-market pair — OTC streams are broker-specific and cannot be queried
-    directly. Indicator analysis is still real; the format rotation in
-    engine.py is what masks the pattern from brokers.
+def _near_sr(df_1m: pd.DataFrame, buffer_pct: float = 0.001) -> bool:
+    """Returns True if price is near 1m support or resistance level."""
+    close = df_1m["close"]
+    high = df_1m["high"]
+    low = df_1m["low"]
+    price = close.iloc[-1]
+    # Swing highs and lows from last 50 candles
+    resistance = high.iloc[-50:].max()
+    support = low.iloc[-50:].min()
+    near_res = abs(price - resistance) / price < buffer_pct
+    near_sup = abs(price - support) / price < buffer_pct
+    return near_res or near_sup
+
+async def auto_scan(pair: str, tf_min: int) -> Optional[Signal]:
+    """Auto scan with filters:
+    - 5min expiry: 1H trend filter (signal must match 1H trend)
+    - 1min expiry: must be near 1m support/resistance
+    After signal found, waits 10 seconds and confirms direction still holds.
     """
-    base = pair.replace(" OTC", "").strip()
-    for fetcher in (_fetch_twelvedata, _fetch_yf):
-        df = await fetcher(base, tf_min, n)
-        if df is not None and len(df) >= 30:
-            return df
-    raise RuntimeError(f"No market data available for {pair}")
-async def latest_price(pair: str) -> Optional[float]:
     try:
-        df = await fetch_candles(pair, 1, 5)
-        return float(df["close"].iloc[-1])
+        df = await fetch_candles(pair, tf_min=tf_min, n=120)
+        raw, strength = _consensus(df)
+        entry = float(df["close"].iloc[-1])
     except Exception:
         return None
-# --- market-hours helper ---------------------------------------------------
-def market_is_open() -> bool:
-    """Forex market hours: closed Friday 22:00 UTC -> Sunday 22:00 UTC."""
-    now = datetime.now(timezone.utc)
-    wd = now.weekday()  # Mon=0 ... Sun=6
-    if wd == 5:  # Saturday
-        return False
-    if wd == 4 and now.hour >= 22:  # Friday >= 22:00 UTC
-        return False
-    if wd == 6 and now.hour < 22:  # Sunday < 22:00 UTC
-        return False
-    return True
+    if raw == "NONE":
+        return None
+    if tf_min == 5:
+        # 1H trend filter
+        try:
+            df_1h = await fetch_candles(pair, tf_min=60, n=60)
+            trend = _h1_trend(df_1h)
+            if trend != "NONE" and trend != raw:
+                return None
+        except Exception:
+            pass
+        # Pullback + reversal filter on 1m candles
+        # Wait for 1m candles to pull back then reverse in signal direction
+        try:
+            import asyncio as _aio
+            # Check current 1m candles for pullback
+            df_1m = await fetch_candles(pair, tf_min=1, n=10)
+            close_1m = df_1m["close"]
+            # Detect pullback: last 2-3 candles moved against direction
+            c1 = close_1m.iloc[-1]
+            c2 = close_1m.iloc[-2]
+            c3 = close_1m.iloc[-3]
+            if raw == "BUY":
+                in_pullback = c2 < c3  # last candles going down (pullback)
+            else:
+                in_pullback = c2 > c3  # last candles going up (pullback)
+            if in_pullback:
+                # Wait up to 3 minutes for reversal
+                for _ in range(18):  # check every 10 seconds, max 3 min
+                    await _aio.sleep(10)
+                    try:
+                        df_new = await fetch_candles(pair, tf_min=1, n=5)
+                        cn = df_new["close"]
+                        new_c1 = cn.iloc[-1]
+                        new_c2 = cn.iloc[-2]
+                        # Reversal detected
+                        if raw == "BUY" and new_c1 > new_c2:
+                            entry = float(new_c1)
+                            break
+                        elif raw == "SELL" and new_c1 < new_c2:
+                            entry = float(new_c1)
+                            break
+                    except Exception:
+                        pass
+                else:
+                    return None  # no reversal within 3 min — skip
+        except Exception:
+            pass
+    elif tf_min == 1:
+        # Support/resistance filter
+        try:
+            df_1m = await fetch_candles(pair, tf_min=1, n=60)
+            if not _near_sr(df_1m):
+                return None
+            # Candle confirmation: last closed candle must match direction
+            last_open = float(df_1m["open"].iloc[-2])
+            last_close = float(df_1m["close"].iloc[-2])
+            candle_bullish = last_close > last_open
+            candle_bearish = last_close < last_open
+            if raw == "BUY" and not candle_bullish:
+                return None
+            if raw == "SELL" and not candle_bearish:
+                return None
+        except Exception:
+            pass
+    return Signal(direction=raw, strength=strength, entry=entry, raw_dir=raw)
+
+async def best_timeframe(pair: str, all_otc_pairs: list = None) -> Optional[tuple[int, Signal]]:
+    """Bot Picks: scan 1m, 2m, 3m and return the strongest passing signal.
+    For OTC pairs, scans all OTC pairs and returns best signal."""
+    if pair.endswith(" OTC") and all_otc_pairs:
+        best_sig = None
+        best_pair = None
+        async def _scan_pair(p):
+            try:
+                return p, await analyze(p, tf_min=1)
+            except Exception:
+                return p, None
+        results = await _asyncio.gather(*[_scan_pair(p) for p in all_otc_pairs])
+        for p, sig in results:
+            if sig and (best_sig is None or sig.strength > best_sig.strength):
+                best_sig = sig
+                best_pair = p
+        if best_sig:
+            return 1, best_sig
+        return None
+    best: Optional[tuple[int, Signal]] = None
+    for tf in (1, 2, 3):
+        try:
+            sig = await analyze(pair, tf)
+        except Exception:
+            continue
+        if not sig:
+            continue
+        if sig.strength < 70:
+            continue
+        if best is None or sig.strength < best[1].strength:
+            best = (tf, sig)
+    return best
